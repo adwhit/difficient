@@ -2,19 +2,47 @@ use std::{collections::HashMap, hash::Hash};
 
 // *** Trait
 
-pub trait Diffable: Sized {
-    type Diff: Replace<Replaces = Self>;
+type Result<T> = std::result::Result<T, ApplyError>;
 
+pub trait Diffable: Sized {
+    type Diff: Replace<Replaces = Self> + Apply<Parent = Self>;
     fn diff(&self, other: &Self) -> Self::Diff;
+    fn apply(self, diff: Self::Diff) -> Result<Self> {
+        diff.apply(self)
+    }
 }
 
 pub trait Replace {
     type Replaces;
-
     fn is_unchanged(&self) -> bool;
     fn is_replaced(&self) -> bool;
     fn get_replaced(self) -> Option<Self::Replaces>;
 }
+
+pub trait Apply {
+    type Parent;
+    fn apply(self, source: Self::Parent) -> Result<Self::Parent>;
+}
+
+pub enum ApplyError {
+    EnumDidNotApply,
+}
+
+impl std::fmt::Debug for ApplyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        todo!()
+    }
+}
+
+impl std::fmt::Display for ApplyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        todo!()
+    }
+}
+
+impl std::error::Error for ApplyError {}
+
+// *** Helper structs
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AtomicDiff<T> {
@@ -39,6 +67,16 @@ impl<T> Replace for AtomicDiff<T> {
         } else {
             None
         }
+    }
+}
+
+impl<T> Apply for AtomicDiff<T> {
+    type Parent = T;
+    fn apply(self, source: Self::Parent) -> Result<Self::Parent> {
+        Ok(match self {
+            AtomicDiff::Unchanged => source,
+            AtomicDiff::Replaced(r) => r,
+        })
     }
 }
 
@@ -69,48 +107,133 @@ impl<T, U> Replace for Diff<T, U> {
     }
 }
 
+impl<T, U> Apply for Diff<T, U>
+where
+    T: Diffable,
+    U: Apply<Parent = T>, // <<T as Diffable>::Diff as Apply>::Parent = T,
+{
+    type Parent = T;
+
+    fn apply(self, source: Self::Parent) -> Result<Self::Parent> {
+        let patch = match self {
+            Diff::Unchanged => return Ok(source),
+            Diff::Patched(p) => p,
+            Diff::Replaced(r) => return Ok(r),
+        };
+        patch.apply(source)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
-pub enum KvDiff<T, U> {
-    Unchanged,
+pub enum KvDiff<T: Diffable> {
     Removed,
-    Patch(U),
-    Replace(T),
+    Inserted(T),
+    Diff(T::Diff),
+}
+
+impl<T: Diffable> KvDiff<T> {
+    fn diff(self) -> Option<T::Diff> {
+        if let KvDiff::Diff(d) = self {
+            Some(d)
+        } else {
+            None
+        }
+    }
 }
 
 // ** Common impls ***
 
-impl<K: Hash + Eq, V: Diffable> Diffable for HashMap<K, V> {
-    type Diff = Diff<Self, HashMap<K, KvDiff<V, V::Diff>>>;
+macro_rules! impl_diffable_for_primitives {
+    ($($typ: ty)*) => ($(
+        impl Diffable for $typ {
+            type Diff = AtomicDiff<Self>;
+
+            fn diff(&self, other: &Self) -> Self::Diff {
+                if self == other {
+                    AtomicDiff::Unchanged
+                } else {
+                    AtomicDiff::Replaced(other.clone())
+                }
+            }
+        }
+    )*);
+}
+
+impl_diffable_for_primitives! {
+    i8 i16 i32 i64
+    u8 u16 u32 u64
+    bool
+    &'static str
+    String
+}
+
+impl<T: Clone + PartialEq> Diffable for Vec<T> {
+    type Diff = AtomicDiff<Vec<T>>;
 
     fn diff(&self, other: &Self) -> Self::Diff {
-        let mut rtn = HashMap::new();
-        for (k, v) in self.iter() {
-            if let Some(other) = other.get(k) {
-                let diff = v.diff(other);
-            } else {
-                rtn.insert(k, todo!());
+        if self.len() != other.len() {
+            return AtomicDiff::Replaced(other.clone());
+        }
+        for (elem, other_elem) in self.iter().zip(other.iter()) {
+            if elem != other_elem {
+                return AtomicDiff::Replaced(other.clone());
             }
         }
-        for (k, v) in other.iter() {
-            if let Some(other) = other.get(k) {
-                todo!()
-            } else {
-                todo!()
-            }
-        }
-        todo!()
+        AtomicDiff::Unchanged
     }
 }
 
-impl Diffable for String {
-    type Diff = AtomicDiff<Self>;
+impl<K: Hash + Eq + Clone, V: Diffable + Clone> Diffable for HashMap<K, V> {
+    type Diff = Diff<Self, HashMap<K, KvDiff<V>>>;
 
     fn diff(&self, other: &Self) -> Self::Diff {
-        if self == other {
-            AtomicDiff::Unchanged
-        } else {
-            AtomicDiff::Replaced(other.clone())
+        let mut diffs: HashMap<K, KvDiff<V>> = HashMap::new();
+        let mut all_unchanged = true;
+        let mut all_replaced = true;
+        for (k, v) in self.iter() {
+            let Some(other) = other.get(k) else {
+                all_replaced = false;
+                all_unchanged = false;
+                diffs.insert(k.clone(), KvDiff::Removed);
+                continue;
+            };
+            let diff = v.diff(other);
+            if diff.is_unchanged() {
+                // do 'nothing'
+                all_replaced = false;
+                continue;
+            } else {
+                all_replaced &= diff.is_replaced();
+                all_unchanged = false;
+                diffs.insert(k.clone(), KvDiff::Diff(diff));
+            }
         }
+        for (k, v) in other.iter() {
+            if !other.contains_key(k) {
+                all_unchanged = false;
+                all_replaced = false;
+                diffs.insert(k.clone(), KvDiff::Inserted(v.clone()));
+            }
+        }
+        if all_unchanged {
+            Diff::Unchanged
+        } else if all_replaced {
+            let replace = diffs
+                .into_iter()
+                .map(|(k, v)| (k, v.diff().unwrap().get_replaced().unwrap()))
+                .collect();
+            Diff::Replaced(replace)
+        } else {
+            Diff::Patched(diffs)
+        }
+    }
+}
+
+impl<K, V: Diffable> Apply for HashMap<K, KvDiff<V>> {
+    type Parent = HashMap<K, V>;
+
+    fn apply(self, source: Self::Parent) -> Result<Self::Parent> {
+        todo!()
     }
 }
 
@@ -119,6 +242,10 @@ impl Diffable for () {
 
     fn diff(&self, _: &Self) -> Self::Diff {
         ()
+    }
+
+    fn apply(self, (): Self::Diff) -> Result<Self> {
+        Ok(())
     }
 }
 
@@ -138,15 +265,11 @@ impl Replace for () {
     }
 }
 
-impl Diffable for i32 {
-    type Diff = AtomicDiff<Self>;
+impl Apply for () {
+    type Parent = ();
 
-    fn diff(&self, other: &Self) -> Self::Diff {
-        if self == other {
-            AtomicDiff::Unchanged
-        } else {
-            AtomicDiff::Replaced(other.clone())
-        }
+    fn apply(self, _: Self::Parent) -> Result<Self::Parent> {
+        Ok(())
     }
 }
 
@@ -211,6 +334,19 @@ struct ParentDiff {
     val: <String as Diffable>::Diff,
 }
 
+impl Apply for ParentDiff {
+    type Parent = Parent;
+
+    fn apply(self, source: Self::Parent) -> Result<Self::Parent> {
+        Ok(Self::Parent {
+            c1: self.c1.apply(source.c1)?,
+            c2: self.c2.apply(source.c2)?,
+            c3: self.c3.apply(source.c3)?,
+            val: self.val.apply(source.val)?,
+        })
+    }
+}
+
 impl Diffable for Child1 {
     type Diff = Diff<Self, Child1Diff>;
 
@@ -233,6 +369,17 @@ impl Diffable for Child1 {
 struct Child1Diff {
     x: AtomicDiff<i32>,
     y: AtomicDiff<String>,
+}
+
+impl Apply for Child1Diff {
+    type Parent = Child1;
+
+    fn apply(self, source: Self::Parent) -> Result<Self::Parent> {
+        Ok(Self::Parent {
+            x: self.x.apply(source.x)?,
+            y: self.y.apply(source.y)?,
+        })
+    }
 }
 
 impl Diffable for Child2 {
@@ -259,6 +406,18 @@ struct Child2Diff {
     a: <String as Diffable>::Diff,
     b: <SomeChild as Diffable>::Diff,
     c: <() as Diffable>::Diff,
+}
+
+impl Apply for Child2Diff {
+    type Parent = Child2;
+
+    fn apply(self, source: Self::Parent) -> Result<Self::Parent> {
+        Ok(Self::Parent {
+            a: self.a.apply(source.a)?,
+            b: self.b.apply(source.b)?,
+            c: Apply::apply(self.c, source.c)?,
+        })
+    }
 }
 
 impl Diffable for SomeChild {
@@ -296,19 +455,11 @@ enum SomeChildDiff {
     C2(Box<<Child2 as Diffable>::Diff>),
 }
 
-impl<T: Clone + PartialEq> Diffable for Vec<T> {
-    type Diff = AtomicDiff<Vec<T>>;
+impl Apply for SomeChildDiff {
+    type Parent = SomeChild;
 
-    fn diff(&self, other: &Self) -> Self::Diff {
-        if self.len() != other.len() {
-            return AtomicDiff::Replaced(other.clone());
-        }
-        for (elem, other_elem) in self.iter().zip(other.iter()) {
-            if elem != other_elem {
-                return AtomicDiff::Replaced(other.clone());
-            }
-        }
-        AtomicDiff::Unchanged
+    fn apply(self, source: Self::Parent) -> Result<Self::Parent> {
+        todo!()
     }
 }
 
@@ -343,6 +494,7 @@ fn smoke_test() {
         let p2 = p1.clone();
         let diff = p1.diff(&p2);
         assert!(matches!(diff, Diff::Unchanged));
+        assert_eq!(p1.clone().apply(diff).unwrap(), p2);
     }
 
     {
@@ -356,5 +508,6 @@ fn smoke_test() {
             val: AtomicDiff::Replaced("mello".into()),
         });
         assert_eq!(diff, expect);
+        assert_eq!(p1.clone().apply(diff).unwrap(), p3);
     }
 }
