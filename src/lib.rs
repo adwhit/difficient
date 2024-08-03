@@ -459,7 +459,13 @@ impl Apply for SomeChildDiff {
     type Parent = SomeChild;
 
     fn apply(self, source: Self::Parent) -> Result<Self::Parent> {
-        todo!()
+        match (self, source) {
+            (SomeChildDiff::C1(diff), SomeChild::C1(src)) => Ok(SomeChild::C1(diff.apply(src)?)),
+            (SomeChildDiff::C2(diff), SomeChild::C2(src)) => {
+                Ok(SomeChild::C2(Box::new(diff.apply(*src)?)))
+            }
+            _ => Err(ApplyError::EnumDidNotApply),
+        }
     }
 }
 
