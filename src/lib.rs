@@ -2,13 +2,17 @@ use std::{collections::HashMap, hash::Hash};
 
 // *** Trait
 
-type Result<T> = std::result::Result<T, ApplyError>;
-
 pub trait Diffable: Sized {
     type Diff: Replace<Replaces = Self> + Apply<Parent = Self>;
     fn diff(&self, other: &Self) -> Self::Diff;
-    fn apply(self, diff: Self::Diff) -> Result<Self> {
-        diff.apply(self)
+    fn apply(&mut self, diff: Self::Diff) -> Result<(), Vec<ApplyError>> {
+        let mut errs = Vec::new();
+        diff.apply(self, &mut errs);
+        if errs.is_empty() {
+            Ok(())
+        } else {
+            Err(errs)
+        }
     }
 }
 
@@ -21,22 +25,29 @@ pub trait Replace {
 
 pub trait Apply {
     type Parent;
-    fn apply(self, source: Self::Parent) -> Result<Self::Parent>;
+    fn apply(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>);
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ApplyError {
-    EnumDidNotApply,
-}
-
-impl std::fmt::Debug for ApplyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!()
-    }
+    MismatchingEnum,
+    MissingKey,
+    UnexpectedKey,
 }
 
 impl std::fmt::Display for ApplyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!()
+        match self {
+            ApplyError::MismatchingEnum => {
+                write!(f, "enum mismatch")
+            }
+            ApplyError::MissingKey => {
+                write!(f, "missing key")
+            }
+            ApplyError::UnexpectedKey => {
+                write!(f, "unexpected key")
+            }
+        }
     }
 }
 
@@ -72,11 +83,11 @@ impl<T> Replace for AtomicDiff<T> {
 
 impl<T> Apply for AtomicDiff<T> {
     type Parent = T;
-    fn apply(self, source: Self::Parent) -> Result<Self::Parent> {
-        Ok(match self {
-            AtomicDiff::Unchanged => source,
-            AtomicDiff::Replaced(r) => r,
-        })
+    fn apply(self, source: &mut Self::Parent, _: &mut Vec<ApplyError>) {
+        match self {
+            AtomicDiff::Unchanged => {}
+            AtomicDiff::Replaced(r) => *source = r,
+        };
     }
 }
 
@@ -114,13 +125,12 @@ where
 {
     type Parent = T;
 
-    fn apply(self, source: Self::Parent) -> Result<Self::Parent> {
-        let patch = match self {
-            Diff::Unchanged => return Ok(source),
-            Diff::Patched(p) => p,
-            Diff::Replaced(r) => return Ok(r),
+    fn apply(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+        match self {
+            Diff::Unchanged => {}
+            Diff::Patched(patch) => patch.apply(source, errs),
+            Diff::Replaced(r) => *source = r,
         };
-        patch.apply(source)
     }
 }
 
@@ -229,11 +239,26 @@ impl<K: Hash + Eq + Clone, V: Diffable + Clone> Diffable for HashMap<K, V> {
     }
 }
 
-impl<K, V: Diffable> Apply for HashMap<K, KvDiff<V>> {
+impl<K: Eq + Hash, V: Diffable> Apply for HashMap<K, KvDiff<V>> {
     type Parent = HashMap<K, V>;
 
-    fn apply(self, source: Self::Parent) -> Result<Self::Parent> {
-        todo!()
+    fn apply(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+        for (k, v) in self.into_iter() {
+            match v {
+                KvDiff::Removed => match source.remove(&k) {
+                    Some(_) => {}
+                    None => errs.push(ApplyError::MissingKey),
+                },
+                KvDiff::Inserted(val) => match source.insert(k, val) {
+                    Some(_) => errs.push(ApplyError::UnexpectedKey),
+                    None => {}
+                },
+                KvDiff::Diff(diff) => match source.get_mut(&k) {
+                    Some(val) => diff.apply(val, errs),
+                    None => errs.push(ApplyError::MissingKey),
+                },
+            }
+        }
     }
 }
 
@@ -242,10 +267,6 @@ impl Diffable for () {
 
     fn diff(&self, _: &Self) -> Self::Diff {
         ()
-    }
-
-    fn apply(self, (): Self::Diff) -> Result<Self> {
-        Ok(())
     }
 }
 
@@ -268,220 +289,205 @@ impl Replace for () {
 impl Apply for () {
     type Parent = ();
 
-    fn apply(self, _: Self::Parent) -> Result<Self::Parent> {
-        Ok(())
+    fn apply(self, _: &mut Self::Parent, _: &mut Vec<ApplyError>) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ** Test structs
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct Parent {
+        c1: Child1,
+        c2: Vec<Child1>,
+        c3: HashMap<i32, Child2>,
+        val: String,
     }
-}
 
-// ** Test structs
+    #[derive(Debug, Clone, PartialEq)]
+    struct Child1 {
+        x: i32,
+        y: String,
+    }
 
-#[derive(Debug, Clone, PartialEq)]
-struct Parent {
-    c1: Child1,
-    c2: Vec<Child1>,
-    c3: HashMap<i32, Child2>,
-    val: String,
-}
+    #[derive(Debug, Clone, PartialEq)]
+    struct Child2 {
+        a: String,
+        b: SomeChild,
+        c: (),
+    }
 
-#[derive(Debug, Clone, PartialEq)]
-struct Child1 {
-    x: i32,
-    y: String,
-}
+    #[derive(Debug, Clone, PartialEq)]
+    enum SomeChild {
+        C1(Child1),
+        C2(Box<Child2>),
+    }
 
-#[derive(Debug, Clone, PartialEq)]
-struct Child2 {
-    a: String,
-    b: SomeChild,
-    c: (),
-}
+    // *** Impls ***
 
-#[derive(Debug, Clone, PartialEq)]
-enum SomeChild {
-    C1(Child1),
-    C2(Box<Child2>),
-}
+    impl Diffable for Parent {
+        type Diff = Diff<Self, ParentDiff>;
 
-// *** Impls ***
-
-impl Diffable for Parent {
-    type Diff = Diff<Self, ParentDiff>;
-
-    fn diff(&self, other: &Self) -> Self::Diff {
-        let c1 = self.c1.diff(&other.c1);
-        let c2 = self.c2.diff(&other.c2);
-        let c3 = self.c3.diff(&other.c3);
-        let val = self.val.diff(&other.val);
-        if c1.is_unchanged() && c2.is_unchanged() && c3.is_unchanged() && val.is_unchanged() {
-            Diff::Unchanged
-        } else if c1.is_replaced() && c2.is_replaced() && c3.is_replaced() && val.is_replaced() {
-            let c1 = c1.get_replaced().unwrap();
-            let c2 = c2.get_replaced().unwrap();
-            let c3 = c3.get_replaced().unwrap();
-            let val = val.get_replaced().unwrap();
-            Diff::Replaced(Self { c1, c2, c3, val })
-        } else {
-            Diff::Patched(ParentDiff { c1, c2, c3, val })
+        fn diff(&self, other: &Self) -> Self::Diff {
+            let c1 = self.c1.diff(&other.c1);
+            let c2 = self.c2.diff(&other.c2);
+            let c3 = self.c3.diff(&other.c3);
+            let val = self.val.diff(&other.val);
+            if c1.is_unchanged() && c2.is_unchanged() && c3.is_unchanged() && val.is_unchanged() {
+                Diff::Unchanged
+            } else if c1.is_replaced() && c2.is_replaced() && c3.is_replaced() && val.is_replaced()
+            {
+                let c1 = c1.get_replaced().unwrap();
+                let c2 = c2.get_replaced().unwrap();
+                let c3 = c3.get_replaced().unwrap();
+                let val = val.get_replaced().unwrap();
+                Diff::Replaced(Self { c1, c2, c3, val })
+            } else {
+                Diff::Patched(ParentDiff { c1, c2, c3, val })
+            }
         }
     }
-}
 
-#[derive(Debug, Clone, PartialEq)]
-struct ParentDiff {
-    c1: <Child1 as Diffable>::Diff,
-    c2: <Vec<Child1> as Diffable>::Diff,
-    c3: <HashMap<i32, Child2> as Diffable>::Diff,
-    val: <String as Diffable>::Diff,
-}
-
-impl Apply for ParentDiff {
-    type Parent = Parent;
-
-    fn apply(self, source: Self::Parent) -> Result<Self::Parent> {
-        Ok(Self::Parent {
-            c1: self.c1.apply(source.c1)?,
-            c2: self.c2.apply(source.c2)?,
-            c3: self.c3.apply(source.c3)?,
-            val: self.val.apply(source.val)?,
-        })
+    #[derive(Debug, Clone, PartialEq)]
+    struct ParentDiff {
+        c1: <Child1 as Diffable>::Diff,
+        c2: <Vec<Child1> as Diffable>::Diff,
+        c3: <HashMap<i32, Child2> as Diffable>::Diff,
+        val: <String as Diffable>::Diff,
     }
-}
 
-impl Diffable for Child1 {
-    type Diff = Diff<Self, Child1Diff>;
+    impl Apply for ParentDiff {
+        type Parent = Parent;
 
-    fn diff(&self, other: &Self) -> Self::Diff {
-        let x = self.x.diff(&other.x);
-        let y = self.y.diff(&other.y);
-        if x.is_unchanged() && y.is_unchanged() {
-            Diff::Unchanged
-        } else if x.is_replaced() && y.is_replaced() {
-            let x = x.get_replaced().unwrap();
-            let y = y.get_replaced().unwrap();
-            Diff::Replaced(Self { x, y })
-        } else {
-            Diff::Patched(Child1Diff { x, y })
+        fn apply(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+            self.c1.apply(&mut source.c1, errs);
+            self.c2.apply(&mut source.c2, errs);
+            self.c3.apply(&mut source.c3, errs);
+            self.val.apply(&mut source.val, errs);
         }
     }
-}
 
-#[derive(Debug, Clone, PartialEq)]
-struct Child1Diff {
-    x: AtomicDiff<i32>,
-    y: AtomicDiff<String>,
-}
+    impl Diffable for Child1 {
+        type Diff = Diff<Self, Child1Diff>;
 
-impl Apply for Child1Diff {
-    type Parent = Child1;
-
-    fn apply(self, source: Self::Parent) -> Result<Self::Parent> {
-        Ok(Self::Parent {
-            x: self.x.apply(source.x)?,
-            y: self.y.apply(source.y)?,
-        })
-    }
-}
-
-impl Diffable for Child2 {
-    type Diff = Diff<Self, Child2Diff>;
-    fn diff(&self, other: &Self) -> Self::Diff {
-        let a = self.a.diff(&other.a);
-        let b = self.b.diff(&other.b);
-        let c = self.c.diff(&other.c);
-        if a.is_unchanged() && b.is_unchanged() {
-            Diff::Unchanged
-        } else if a.is_replaced() && b.is_replaced() {
-            let a = a.get_replaced().unwrap();
-            let b = b.get_replaced().unwrap();
-            let c = c.get_replaced().unwrap();
-            Diff::Replaced(Self { a, b, c })
-        } else {
-            Diff::Patched(Child2Diff { a, b, c })
+        fn diff(&self, other: &Self) -> Self::Diff {
+            let x = self.x.diff(&other.x);
+            let y = self.y.diff(&other.y);
+            if x.is_unchanged() && y.is_unchanged() {
+                Diff::Unchanged
+            } else if x.is_replaced() && y.is_replaced() {
+                let x = x.get_replaced().unwrap();
+                let y = y.get_replaced().unwrap();
+                Diff::Replaced(Self { x, y })
+            } else {
+                Diff::Patched(Child1Diff { x, y })
+            }
         }
     }
-}
 
-#[derive(Debug, Clone, PartialEq)]
-struct Child2Diff {
-    a: <String as Diffable>::Diff,
-    b: <SomeChild as Diffable>::Diff,
-    c: <() as Diffable>::Diff,
-}
-
-impl Apply for Child2Diff {
-    type Parent = Child2;
-
-    fn apply(self, source: Self::Parent) -> Result<Self::Parent> {
-        Ok(Self::Parent {
-            a: self.a.apply(source.a)?,
-            b: self.b.apply(source.b)?,
-            c: Apply::apply(self.c, source.c)?,
-        })
+    #[derive(Debug, Clone, PartialEq)]
+    struct Child1Diff {
+        x: AtomicDiff<i32>,
+        y: AtomicDiff<String>,
     }
-}
 
-impl Diffable for SomeChild {
-    type Diff = Diff<SomeChild, SomeChildDiff>;
-    fn diff(&self, other: &Self) -> Self::Diff {
-        match (self, other) {
-            (Self::C1(left), Self::C1(right)) => {
-                let this = left.diff(right);
-                if this.is_unchanged() {
-                    Diff::Unchanged
-                } else if this.is_replaced() {
-                    Diff::Replaced(Self::C1(this.get_replaced().unwrap()))
-                } else {
-                    Diff::Patched(SomeChildDiff::C1(this))
+    impl Apply for Child1Diff {
+        type Parent = Child1;
+
+        fn apply(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+            self.x.apply(&mut source.x, errs);
+            self.y.apply(&mut source.y, errs);
+        }
+    }
+
+    impl Diffable for Child2 {
+        type Diff = Diff<Self, Child2Diff>;
+        fn diff(&self, other: &Self) -> Self::Diff {
+            let a = self.a.diff(&other.a);
+            let b = self.b.diff(&other.b);
+            let c = self.c.diff(&other.c);
+            if a.is_unchanged() && b.is_unchanged() {
+                Diff::Unchanged
+            } else if a.is_replaced() && b.is_replaced() {
+                let a = a.get_replaced().unwrap();
+                let b = b.get_replaced().unwrap();
+                let c = c.get_replaced().unwrap();
+                Diff::Replaced(Self { a, b, c })
+            } else {
+                Diff::Patched(Child2Diff { a, b, c })
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct Child2Diff {
+        a: <String as Diffable>::Diff,
+        b: <SomeChild as Diffable>::Diff,
+        c: <() as Diffable>::Diff,
+    }
+
+    impl Apply for Child2Diff {
+        type Parent = Child2;
+
+        fn apply(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+            self.a.apply(&mut source.a, errs);
+            self.b.apply(&mut source.b, errs);
+            Apply::apply(self.c, &mut source.c, errs);
+        }
+    }
+
+    impl Diffable for SomeChild {
+        type Diff = Diff<SomeChild, SomeChildDiff>;
+        fn diff(&self, other: &Self) -> Self::Diff {
+            match (self, other) {
+                (Self::C1(left), Self::C1(right)) => {
+                    let this = left.diff(right);
+                    if this.is_unchanged() {
+                        Diff::Unchanged
+                    } else if this.is_replaced() {
+                        Diff::Replaced(Self::C1(this.get_replaced().unwrap()))
+                    } else {
+                        Diff::Patched(SomeChildDiff::C1(this))
+                    }
                 }
-            }
-            (Self::C2(left), Self::C2(right)) => {
-                let this = left.diff(right);
-                if this.is_unchanged() {
-                    Diff::Unchanged
-                } else if this.is_replaced() {
-                    Diff::Replaced(Self::C2(Box::new(this.get_replaced().unwrap())))
-                } else {
-                    Diff::Patched(SomeChildDiff::C2(Box::new(this)))
+                (Self::C2(left), Self::C2(right)) => {
+                    let this = left.diff(right);
+                    if this.is_unchanged() {
+                        Diff::Unchanged
+                    } else if this.is_replaced() {
+                        Diff::Replaced(Self::C2(Box::new(this.get_replaced().unwrap())))
+                    } else {
+                        Diff::Patched(SomeChildDiff::C2(Box::new(this)))
+                    }
                 }
+                _ => Diff::Replaced(other.clone()),
             }
-            _ => Diff::Replaced(other.clone()),
         }
     }
-}
 
-#[derive(Debug, Clone, PartialEq)]
-enum SomeChildDiff {
-    C1(<Child1 as Diffable>::Diff),
-    C2(Box<<Child2 as Diffable>::Diff>),
-}
+    #[derive(Debug, Clone, PartialEq)]
+    enum SomeChildDiff {
+        C1(<Child1 as Diffable>::Diff),
+        C2(Box<<Child2 as Diffable>::Diff>),
+    }
 
-impl Apply for SomeChildDiff {
-    type Parent = SomeChild;
+    impl Apply for SomeChildDiff {
+        type Parent = SomeChild;
 
-    fn apply(self, source: Self::Parent) -> Result<Self::Parent> {
-        match (self, source) {
-            (SomeChildDiff::C1(diff), SomeChild::C1(src)) => Ok(SomeChild::C1(diff.apply(src)?)),
-            (SomeChildDiff::C2(diff), SomeChild::C2(src)) => {
-                Ok(SomeChild::C2(Box::new(diff.apply(*src)?)))
+        fn apply(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+            match (self, source) {
+                (SomeChildDiff::C1(diff), SomeChild::C1(src)) => diff.apply(src, errs),
+                (SomeChildDiff::C2(diff), SomeChild::C2(src)) => diff.apply(src, errs),
+                _ => errs.push(ApplyError::MismatchingEnum),
             }
-            _ => Err(ApplyError::EnumDidNotApply),
         }
     }
-}
 
-#[test]
-fn smoke_test() {
-    let p1 = Parent {
-        c1: Child1 {
-            x: 123,
-            y: "me".into(),
-        },
-        c2: vec![Child1 {
-            x: 234,
-            y: "yazoo".into(),
-        }],
-        c3: [(
-            321,
+    #[test]
+    fn smoke_test() {
+        fn dummy_child2() -> Child2 {
             Child2 {
                 a: "ayeaye".into(),
                 b: SomeChild::C1(Child1 {
@@ -489,31 +495,75 @@ fn smoke_test() {
                     y: "uuu".into(),
                 }),
                 c: (),
+            }
+        }
+
+        let base = Parent {
+            c1: Child1 {
+                x: 123,
+                y: "me".into(),
             },
-        )]
-        .into_iter()
-        .collect(),
-        val: "hello".into(),
-    };
+            c2: vec![Child1 {
+                x: 234,
+                y: "yazoo".into(),
+            }],
+            c3: [(
+                321,
+                Child2 {
+                    a: "ayeaye".into(),
+                    b: SomeChild::C1(Child1 {
+                        x: 222,
+                        y: "uuu".into(),
+                    }),
+                    c: (),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            val: "hello".into(),
+        };
 
-    {
-        let p2 = p1.clone();
-        let diff = p1.diff(&p2);
-        assert!(matches!(diff, Diff::Unchanged));
-        assert_eq!(p1.clone().apply(diff).unwrap(), p2);
-    }
+        {
+            let mut p1 = base.clone();
+            let diff = p1.diff(&p1);
+            assert!(matches!(diff, Diff::Unchanged));
+            p1.apply(diff).unwrap();
+            assert_eq!(p1, base);
+        }
 
-    {
-        let mut p3 = p1.clone();
-        p3.val = "mello".into();
-        let diff = p1.diff(&p3);
-        let expect = Diff::Patched(ParentDiff {
-            c1: Diff::Unchanged,
-            c2: AtomicDiff::Unchanged,
-            c3: Diff::Unchanged,
-            val: AtomicDiff::Replaced("mello".into()),
-        });
-        assert_eq!(diff, expect);
-        assert_eq!(p1.clone().apply(diff).unwrap(), p3);
+        {
+            let mut p3 = base.clone();
+            let mut p4 = p3.clone();
+            p4.val = "mello".into();
+            let diff = p3.diff(&p4);
+            let expect = Diff::Patched(ParentDiff {
+                c1: Diff::Unchanged,
+                c2: AtomicDiff::Unchanged,
+                c3: Diff::Unchanged,
+                val: AtomicDiff::Replaced("mello".into()),
+            });
+            assert_eq!(diff, expect);
+            p3.apply(diff).unwrap();
+        }
+
+        {
+            let mut p5 = base.clone();
+            let bad_patch = Diff::Patched(ParentDiff {
+                c1: Diff::Unchanged,
+                c2: AtomicDiff::Unchanged,
+                c3: Diff::Patched(
+                    [
+                        (543, KvDiff::Removed),                  // key does not exist
+                        (321, KvDiff::Inserted(dummy_child2())), // key already exists
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+                val: AtomicDiff::Replaced("mello".into()),
+            });
+            let mut err = p5.apply(bad_patch).unwrap_err();
+            err.sort();
+            assert_eq!(err, [ApplyError::MissingKey, ApplyError::UnexpectedKey]);
+        }
     }
 }
