@@ -40,7 +40,7 @@ impl DeriveDiffable {
                         let ty = v.fields.iter().map(|data| &data.ty);
                         quote! {
                             (
-                                #(  <#ty as Diffable>::Diff, )*
+                                #(  <#ty as Diffable<'a>>::Diff, )*
                             )
                         }
                     }
@@ -49,7 +49,7 @@ impl DeriveDiffable {
                         let ty = v.fields.iter().map(|data| &data.ty);
                         quote! {
                             {
-                                #( #field: <#ty as Diffable>::Diff, )*
+                                #( #field: <#ty as Diffable<'a>>::Diff, )*
                             }
                         }
                     }
@@ -58,28 +58,28 @@ impl DeriveDiffable {
                 let pattern_match_right = pattern_match(variants, "right");
                 quote! {
                     #[derive(Debug, Clone, PartialEq)]
-                    enum #diff_name {
+                    enum #diff_name<'a> {
                         #(
                             #var_name #var_diff_def,
                         )*
                     }
 
-                    impl Diffable for #name {
-                        type Diff = Diff<Self, #diff_name>;
+                    impl<'a> Diffable<'a> for #name {
+                        type Diff = DeepDiff<'a, Self, #diff_name<'a>>;
 
-                        fn diff(&self, other: &Self) -> Self::Diff {
+                        fn diff(&self, other: &'a Self) -> Self::Diff {
                             match (self, other) {
                                 #(
                                     (Self::#var_name #pattern_match_left, Self::#var_name #pattern_match_right)  => {
                                         todo!()
                                     }
                                 ),*
-                                _ => Diff::Replaced(other.clone())
+                                _ => DeepDiff::Replaced(other)
                             }
                         }
                     }
 
-                    impl Apply for #diff_name {
+                    impl<'a> Apply for #diff_name<'a> {
                         type Parent = #name;
                         fn apply(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
                             todo!()
@@ -92,31 +92,30 @@ impl DeriveDiffable {
                 let ty = fields.iter().map(|data| &data.ty);
                 quote! {
                     #[derive(Debug, Clone, PartialEq)]
-                    struct #diff_name {
+                    struct #diff_name<'a> {
                         #(
-                            #field: <#ty as Diffable>::Diff,
+                            #field: <#ty as Diffable<'a>>::Diff,
                         )*
                     }
 
-                    impl Diffable for #name {
-                        type Diff = Diff<Self, #diff_name>;
+                    impl<'a> Diffable<'a> for #name {
+                        type Diff = DeepDiff<'a, Self, #diff_name<'a>>;
 
-                        fn diff(&self, other: &Self) -> Self::Diff {
+                        fn diff(&self, other: &'a Self) -> Self::Diff {
                             #(
                                 let #field = self.#field.diff(&other.#field);
                             )*
                             if #( #field.is_unchanged() && )* true {
-                                Diff::Unchanged
+                                DeepDiff::Unchanged
                             } else if #( #field.is_replaced() && )* true {
-                                # ( let #field = #field.get_replaced().unwrap(); )*
-                                Diff::Replaced( Self { #( #field ),* })
+                                DeepDiff::Replaced(other)
                             } else {
-                                Diff::Patched(#diff_name { #( #field ),* })
+                                DeepDiff::Patched(#diff_name { #( #field ),* })
                             }
                         }
                     }
 
-                    impl Apply for #diff_name {
+                    impl<'a> Apply for #diff_name<'a> {
                         type Parent = #name;
                         fn apply(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
                             #( self.#field.apply(&mut source.#field, errs) );*
@@ -215,7 +214,7 @@ mod tests {
                     }
                 }
             }
-            impl Apply for SimpleStructDiff {
+            impl<'a> Apply for SimpleStructDiff {
                 type Parent = SimpleStruct;
                 fn apply(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
                     self.x.apply(&mut source.x, errs);
