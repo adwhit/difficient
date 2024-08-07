@@ -1,5 +1,7 @@
 use std::{collections::HashMap, hash::Hash};
 
+pub use difficient_macros::Diffable;
+
 // *** Trait
 
 pub trait Diffable: Sized {
@@ -389,8 +391,8 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq)]
     struct Child1Diff {
-        x: AtomicDiff<i32>,
-        y: AtomicDiff<String>,
+        x: <i32 as Diffable>::Diff,
+        y: <String as Diffable>::Diff,
     }
 
     impl Apply for Child1Diff {
@@ -565,5 +567,26 @@ mod tests {
             err.sort();
             assert_eq!(err, [ApplyError::MissingKey, ApplyError::UnexpectedKey]);
         }
+    }
+
+    #[test]
+    fn test_derive() {
+        #[derive(Diffable, PartialEq, Debug)]
+        struct It {
+            x: String,
+            y: i32,
+        }
+
+        let mut it1 = It {
+            x: "hello".into(),
+            y: 123,
+        };
+        let it2 = It {
+            x: "bye".into(),
+            y: 123,
+        };
+        let diff = it1.diff(&it2);
+        it1.apply(diff).unwrap();
+        assert_eq!(it1, it2);
     }
 }
