@@ -570,21 +570,37 @@ mod tests {
     }
 
     #[test]
-    fn test_derive() {
+    fn test_derive_simple_struct() {
         #[derive(Diffable, PartialEq, Debug)]
-        struct It {
+        struct SimpleStruct {
             x: String,
             y: i32,
         }
 
-        let mut it1 = It {
+        let mut it1 = SimpleStruct {
             x: "hello".into(),
             y: 123,
         };
-        let it2 = It {
+        let it2 = SimpleStruct {
             x: "bye".into(),
             y: 123,
         };
+        let diff = it1.diff(&it2);
+        it1.apply(diff).unwrap();
+        assert_eq!(it1, it2);
+    }
+
+    #[test]
+    fn test_simple_enum() {
+        #[derive(Diffable, PartialEq, Debug)]
+        enum SimpleEnum {
+            First,
+            Second(i32),
+            Third { x: String, y: () },
+        }
+
+        let mut it1 = SimpleEnum::First;
+        let it2 = SimpleEnum::Second(123);
         let diff = it1.diff(&it2);
         it1.apply(diff).unwrap();
         assert_eq!(it1, it2);

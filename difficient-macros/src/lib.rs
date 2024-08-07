@@ -1,11 +1,15 @@
 extern crate proc_macro;
-use darling::{ast::Data, FromDeriveInput, FromField, FromVariant};
+
+use darling::{
+    ast::{Data, Fields, Style},
+    FromDeriveInput, FromField, FromVariant,
+};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote, ToTokens};
 use syn::DeriveInput;
 
 #[derive(Debug, FromField)]
-struct StructData {
+struct StructLike {
     ident: Option<syn::Ident>,
     ty: syn::Type,
 }
@@ -13,12 +17,13 @@ struct StructData {
 #[derive(Debug, FromVariant)]
 struct EnumData {
     ident: syn::Ident,
+    fields: Fields<StructLike>,
 }
 
 #[derive(Debug, FromDeriveInput)]
 struct DeriveDiffable {
     ident: syn::Ident,
-    data: Data<EnumData, StructData>,
+    data: Data<EnumData, StructLike>,
 }
 
 impl DeriveDiffable {
@@ -28,7 +33,59 @@ impl DeriveDiffable {
 
         match &self.data {
             Data::Enum(variants) => {
-                todo!()
+                let var_name = variants.iter().map(|v| &v.ident).collect::<Vec<_>>();
+                let var_diff_def = variants.iter().map(|v| match v.fields.style {
+                    Style::Unit => quote! {},
+                    Style::Tuple => {
+                        let ty = v.fields.iter().map(|data| &data.ty);
+                        quote! {
+                            (
+                                #(  <#ty as Diffable>::Diff, )*
+                            )
+                        }
+                    }
+                    Style::Struct => {
+                        let field = v.fields.iter().map(|data| &data.ident).collect::<Vec<_>>();
+                        let ty = v.fields.iter().map(|data| &data.ty);
+                        quote! {
+                            {
+                                #( #field: <#ty as Diffable>::Diff, )*
+                            }
+                        }
+                    }
+                });
+                let pattern_match_left = pattern_match(variants, "left");
+                let pattern_match_right = pattern_match(variants, "right");
+                quote! {
+                    #[derive(Debug, Clone, PartialEq)]
+                    enum #diff_name {
+                        #(
+                            #var_name #var_diff_def,
+                        )*
+                    }
+
+                    impl Diffable for #name {
+                        type Diff = Diff<Self, #diff_name>;
+
+                        fn diff(&self, other: &Self) -> Self::Diff {
+                            match (self, other) {
+                                #(
+                                    (#var_name #pattern_match_left, #var_name #pattern_match_right)  => {
+                                        todo!()
+                                    }
+                                ),*
+                                _ => Diff::Replaced(other.clone())
+                            }
+                        }
+                    }
+
+                    impl Apply for #diff_name {
+                        type Parent = #name;
+                        fn apply(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+                            todo!()
+                        }
+                    }
+                }
             }
             Data::Struct(fields) => {
                 let field = fields.iter().map(|data| &data.ident).collect::<Vec<_>>();
@@ -84,6 +141,40 @@ pub fn derive_diffable(tokens: proc_macro::TokenStream) -> proc_macro::TokenStre
     quote! { #diff }.into()
 }
 
+fn pattern_match(variants: &[EnumData], prefix: &str) -> Vec<TokenStream> {
+    variants
+        .iter()
+        .map(|v| match v.fields.style {
+            Style::Unit => quote! {},
+            Style::Tuple => {
+                let pat_l = v
+                    .fields
+                    .iter()
+                    .enumerate()
+                    .map(|(ix, _)| format_ident!("{prefix}_{ix}"));
+                quote! {
+                    (
+                        #(  #pat_l, )*
+                    )
+                }
+            }
+            Style::Struct => {
+                let pat = v.fields.iter().map(|data| &data.ident).collect::<Vec<_>>();
+                let pat_l = v
+                    .fields
+                    .iter()
+                    .enumerate()
+                    .map(|(ix, _)| format_ident!("{prefix}_{ix}"));
+                quote! {
+                    {
+                        #( #pat: #pat_l, )*
+                    }
+                }
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,7 +183,7 @@ mod tests {
     fn test_simple_struct() {
         let input = "
         #[derive(Diffable)]
-        struct Simple {
+        struct SimpleStruct {
             x: i32,
             y: String
         }
@@ -104,12 +195,12 @@ mod tests {
 
         let expect = quote! {
             #[derive(Debug, Clone, PartialEq)]
-            struct SimpleDiff {
+            struct SimpleStructDiff {
                 x: <i32 as Diffable>::Diff,
                 y: <String as Diffable>::Diff,
             }
-            impl Diffable for Simple {
-                type Diff = Diff<Self, SimpleDiff>;
+            impl Diffable for SimpleStruct {
+                type Diff = Diff<Self, SimpleStructDiff>;
                 fn diff(&self, other: &Self) -> Self::Diff {
                     let x = self.x.diff(&other.x);
                     let y = self.y.diff(&other.y);
@@ -120,12 +211,12 @@ mod tests {
                         let y = y.get_replaced().unwrap();
                         Diff::Replaced(Self { x, y })
                     } else {
-                        Diff::Patched(SimpleDiff { x, y })
+                        Diff::Patched(SimpleStructDiff { x, y })
                     }
                 }
             }
-            impl Apply for SimpleDiff {
-                type Parent = Simple;
+            impl Apply for SimpleStructDiff {
+                type Parent = SimpleStruct;
                 fn apply(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
                     self.x.apply(&mut source.x, errs);
                     self.y.apply(&mut source.y, errs)
