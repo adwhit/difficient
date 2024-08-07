@@ -592,9 +592,32 @@ mod tests {
         }
 
         let mut it1 = SimpleEnum::First;
-        let it2 = SimpleEnum::Second(123);
-        let diff = it1.diff(&it2);
-        it1.apply(diff).unwrap();
-        assert_eq!(it1, it2);
+        let mut it2 = SimpleEnum::Second(123);
+        let mut it3 = SimpleEnum::Third {
+            x: "work work".into(),
+            y: (),
+        };
+        let it4 = SimpleEnum::Third {
+            x: "twork".into(),
+            y: (),
+        };
+
+        {
+            let diff = it1.diff(&it2);
+            it1.apply(diff).unwrap();
+            assert_eq!(it1, it2);
+        }
+
+        {
+            let diff = it2.diff(&it3);
+            it2.apply(diff).unwrap();
+            assert_eq!(it2, it3);
+        }
+
+        {
+            let diff = it3.diff(&it4);
+            it3.apply(diff).unwrap();
+            assert_eq!(it3, it4);
+        }
     }
 }
