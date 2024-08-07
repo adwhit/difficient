@@ -70,7 +70,7 @@ impl DeriveDiffable {
                         fn diff(&self, other: &Self) -> Self::Diff {
                             match (self, other) {
                                 #(
-                                    (#var_name #pattern_match_left, #var_name #pattern_match_right)  => {
+                                    (Self::#var_name #pattern_match_left, Self::#var_name #pattern_match_right)  => {
                                         todo!()
                                     }
                                 ),*
