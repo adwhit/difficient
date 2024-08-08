@@ -162,8 +162,7 @@ impl DeriveDiffable {
                 }
             }
             Data::Struct(fields) => {
-                let field = fields.iter().map(|data| &data.ident).collect::<Vec<_>>();
-                let ty = fields.iter().map(|data| &data.ty);
+                let ty = fields.iter().map(|data| &data.ty).collect::<Vec<_>>();
                 if let Style::Unit = fields.style {
                     // short-circuit return
                     return quote! {
@@ -176,27 +175,47 @@ impl DeriveDiffable {
                         }
                     };
                 };
+
+                let field = idents(fields);
+                let accessor = accessor(fields);
+                let diff_ty_def = match fields.style {
+                    Style::Tuple => {
+                        quote! {
+                            struct #diff_ty<'a>(
+                                #(
+                                    <#ty as Diffable<'a>>::Diff,
+                                )*
+                            );
+                        }
+                    }
+                    Style::Struct => {
+                        quote! {
+                            struct #diff_ty<'a> {
+                                #(
+                                    #field: <#ty as Diffable<'a>>::Diff,
+                                )*
+                            }
+                        }
+                    }
+                    Style::Unit => unreachable!(),
+                };
                 quote! {
                     #[derive(Debug, Clone, PartialEq)]
-                    struct #diff_ty<'a> {
-                        #(
-                            #field: <#ty as Diffable<'a>>::Diff,
-                        )*
-                    }
+                    #diff_ty_def
 
                     impl<'a> Diffable<'a> for #name {
                         type Diff = DeepDiff<'a, Self, #diff_ty<'a>>;
 
                         fn diff(&self, other: &'a Self) -> Self::Diff {
                             #(
-                                let #field = self.#field.diff(&other.#field);
+                                let #field = self.#accessor.diff(&other.#accessor);
                             )*
                             if #( #field.is_unchanged() && )* true {
                                 DeepDiff::Unchanged
                             } else if #( #field.is_replaced() && )* true {
                                 DeepDiff::Replaced(other)
                             } else {
-                                DeepDiff::Patched(#diff_ty { #( #field ),* })
+                                DeepDiff::Patched(todo!())
                             }
                         }
                     }
@@ -204,7 +223,7 @@ impl DeriveDiffable {
                     impl<'a> Apply for #diff_ty<'a> {
                         type Parent = #name;
                         fn apply_to_base(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
-                            #( self.#field.apply_to_base(&mut source.#field, errs) );*
+                            #( self.#accessor.apply_to_base(&mut source.#accessor, errs) );*
                         }
                     }
                 }
@@ -261,9 +280,23 @@ fn idents(fields: &Fields<StructLike>) -> Vec<Ident> {
         .enumerate()
         .map(|(ix, sl)| {
             if let Some(field_name) = &sl.ident {
-                format_ident!("{field_name}")
+                field_name.clone()
             } else {
                 format_ident!("f{ix}")
+            }
+        })
+        .collect()
+}
+
+fn accessor(fields: &Fields<StructLike>) -> Vec<TokenStream> {
+    fields
+        .iter()
+        .enumerate()
+        .map(|(ix, sl)| {
+            if let Some(field_name) = &sl.ident {
+                quote! { #field_name }
+            } else {
+                quote! { #ix }
             }
         })
         .collect()
