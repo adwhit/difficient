@@ -549,7 +549,7 @@ mod tests {
     }
 
     #[test]
-    fn test_derive_simple_struct() {
+    fn test_simple_struct() {
         #[derive(Diffable, PartialEq, Debug, Clone)]
         struct SimpleStruct {
             x: String,

@@ -144,11 +144,26 @@ impl DeriveDiffable {
                     }
                 };
 
+                let apply_body =variants.iter().zip(var_name.iter()).map(|(var, var_name)| {
+                    let pat_l = dbg!(prefixed_idents(&var.fields, "left"));
+                    let pat_r = prefixed_idents(&var.fields, "right");
+                    let pattern_match_left = pattern_match(&var.fields, "left");
+                    let pattern_match_right = pattern_match(&var.fields, "right");
+                    quote! {
+                        (Self::#var_name #pattern_match_left, #name::#var_name #pattern_match_right)  => {
+                            #( #pat_l.apply_to_base(#pat_r, errs); )*
+                        }
+                    }
+                }).collect::<Vec<_>>();
+
                 let apply_impl = quote! {
                     impl<'a> Apply for #diff_ty<'a> {
                         type Parent = #name;
                         fn apply_to_base(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
-                            todo!()
+                            match (self, source) {
+                                #( #apply_body )*
+                                _ => errs.push(ApplyError::MismatchingEnum),
+                            }
                         }
                     }
                 };
@@ -199,6 +214,15 @@ impl DeriveDiffable {
                     }
                     Style::Unit => unreachable!(),
                 };
+                let patched_impl = match fields.style {
+                    Style::Tuple => quote! {
+                        #diff_ty( #( #field, )* )
+                    },
+                    Style::Struct => quote! {
+                        #diff_ty{ #( #field, )* }
+                    },
+                    Style::Unit => unreachable!(),
+                };
                 quote! {
                     #[derive(Debug, Clone, PartialEq)]
                     #diff_ty_def
@@ -215,7 +239,7 @@ impl DeriveDiffable {
                             } else if #( #field.is_replaced() && )* true {
                                 DeepDiff::Replaced(other)
                             } else {
-                                DeepDiff::Patched(todo!())
+                                DeepDiff::Patched(#patched_impl)
                             }
                         }
                     }
