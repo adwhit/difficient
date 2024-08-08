@@ -147,7 +147,7 @@ impl DeriveDiffable {
                 let apply_impl = quote! {
                     impl<'a> Apply for #diff_ty<'a> {
                         type Parent = #name;
-                        fn apply(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+                        fn apply_to_base(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
                             todo!()
                         }
                     }
@@ -164,6 +164,18 @@ impl DeriveDiffable {
             Data::Struct(fields) => {
                 let field = fields.iter().map(|data| &data.ident).collect::<Vec<_>>();
                 let ty = fields.iter().map(|data| &data.ty);
+                if let Style::Unit = fields.style {
+                    // short-circuit return
+                    return quote! {
+                        impl<'a> Diffable<'a> for #name {
+                            type Diff = Id<Self>;
+
+                            fn diff(&self, other: &'a Self) -> Self::Diff {
+                                Id::new()
+                            }
+                        }
+                    };
+                };
                 quote! {
                     #[derive(Debug, Clone, PartialEq)]
                     struct #diff_ty<'a> {
@@ -191,8 +203,8 @@ impl DeriveDiffable {
 
                     impl<'a> Apply for #diff_ty<'a> {
                         type Parent = #name;
-                        fn apply(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
-                            #( self.#field.apply(&mut source.#field, errs) );*
+                        fn apply_to_base(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+                            #( self.#field.apply_to_base(&mut source.#field, errs) );*
                         }
                     }
                 }
@@ -296,9 +308,7 @@ mod tests {
                     if x.is_unchanged() && y.is_unchanged() && true {
                         Diff::Unchanged
                     } else if x.is_replaced() && y.is_replaced() && true {
-                        let x = x.get_replaced().unwrap();
-                        let y = y.get_replaced().unwrap();
-                        Diff::Replaced(Self { x, y })
+                        Diff::Replaced(other)
                     } else {
                         Diff::Patched(SimpleStructDiff { x, y })
                     }
@@ -306,7 +316,7 @@ mod tests {
             }
             impl<'a> Apply for SimpleStructDiff {
                 type Parent = SimpleStruct;
-                fn apply(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+                fn apply_to_base(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
                     self.x.apply(&mut source.x, errs);
                     self.y.apply(&mut source.y, errs)
                 }

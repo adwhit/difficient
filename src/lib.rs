@@ -1,4 +1,4 @@
-use std::{collections::HashMap, hash::Hash};
+use std::{collections::HashMap, hash::Hash, marker::PhantomData};
 
 pub use difficient_macros::Diffable;
 
@@ -9,7 +9,7 @@ pub trait Diffable<'a>: Sized {
     fn diff(&self, other: &'a Self) -> Self::Diff;
     fn apply(&mut self, diff: Self::Diff) -> Result<(), Vec<ApplyError>> {
         let mut errs = Vec::new();
-        diff.apply(self, &mut errs);
+        diff.apply_to_base(self, &mut errs);
         if errs.is_empty() {
             Ok(())
         } else {
@@ -22,12 +22,11 @@ pub trait Replace {
     type Replaces;
     fn is_unchanged(&self) -> bool;
     fn is_replaced(&self) -> bool;
-    fn get_replaced(&self) -> Option<&Self::Replaces>;
 }
 
 pub trait Apply {
     type Parent;
-    fn apply(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>);
+    fn apply_to_base(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -57,6 +56,32 @@ impl std::error::Error for ApplyError {}
 
 // *** Helper structs
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Id<T>(PhantomData<T>);
+
+impl<T> Id<T> {
+    pub fn new() -> Id<T> {
+        Id(PhantomData)
+    }
+}
+
+impl<T> Replace for Id<T> {
+    type Replaces = T;
+
+    fn is_unchanged(&self) -> bool {
+        true
+    }
+
+    fn is_replaced(&self) -> bool {
+        false
+    }
+}
+
+impl<T> Apply for Id<T> {
+    type Parent = T;
+    fn apply_to_base(self, _: &mut Self::Parent, _: &mut Vec<ApplyError>) {}
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum AtomicDiff<'a, T> {
     Unchanged,
@@ -73,14 +98,6 @@ impl<'a, T> Replace for AtomicDiff<'a, T> {
     fn is_replaced(&self) -> bool {
         matches!(self, AtomicDiff::Replaced(_))
     }
-
-    fn get_replaced(&self) -> Option<&Self::Replaces> {
-        if let Self::Replaced(it) = self {
-            Some(&it)
-        } else {
-            None
-        }
-    }
 }
 
 impl<'a, T> Apply for AtomicDiff<'a, T>
@@ -88,7 +105,7 @@ where
     T: Clone,
 {
     type Parent = T;
-    fn apply(self, source: &mut Self::Parent, _: &mut Vec<ApplyError>) {
+    fn apply_to_base(self, source: &mut Self::Parent, _: &mut Vec<ApplyError>) {
         match self {
             AtomicDiff::Unchanged => {}
             AtomicDiff::Replaced(r) => *source = r.clone(),
@@ -113,14 +130,6 @@ impl<'a, T, U> Replace for DeepDiff<'a, T, U> {
     fn is_replaced(&self) -> bool {
         matches!(self, DeepDiff::Replaced(_))
     }
-
-    fn get_replaced(&self) -> Option<&Self::Replaces> {
-        if let Self::Replaced(it) = self {
-            Some(it)
-        } else {
-            None
-        }
-    }
 }
 
 impl<'a, T, U> Apply for DeepDiff<'a, T, U>
@@ -130,10 +139,10 @@ where
 {
     type Parent = T;
 
-    fn apply(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+    fn apply_to_base(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
         match self {
             DeepDiff::Unchanged => {}
-            DeepDiff::Patched(patch) => patch.apply(source, errs),
+            DeepDiff::Patched(patch) => patch.apply_to_base(source, errs),
             DeepDiff::Replaced(r) => *source = r.clone(),
         };
     }
@@ -241,7 +250,7 @@ where
 {
     type Parent = HashMap<K, V>;
 
-    fn apply(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+    fn apply_to_base(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
         for (k, v) in self.into_iter() {
             match v {
                 KvDiff::Removed => match source.remove(&k) {
@@ -253,7 +262,7 @@ where
                     None => {}
                 },
                 KvDiff::Diff(diff) => match source.get_mut(&k) {
-                    Some(val) => diff.apply(val, errs),
+                    Some(val) => diff.apply_to_base(val, errs),
                     None => errs.push(ApplyError::MissingKey),
                 },
             }
@@ -262,33 +271,11 @@ where
 }
 
 impl<'a> Diffable<'a> for () {
-    type Diff = ();
+    type Diff = Id<Self>;
 
     fn diff(&self, _: &Self) -> Self::Diff {
-        ()
+        Id::new()
     }
-}
-
-impl Replace for () {
-    type Replaces = ();
-
-    fn is_unchanged(&self) -> bool {
-        true
-    }
-
-    fn is_replaced(&self) -> bool {
-        false
-    }
-
-    fn get_replaced(&self) -> Option<&Self::Replaces> {
-        None
-    }
-}
-
-impl Apply for () {
-    type Parent = ();
-
-    fn apply(self, _: &mut Self::Parent, _: &mut Vec<ApplyError>) {}
 }
 
 #[cfg(test)]
@@ -356,11 +343,11 @@ mod tests {
     impl<'a> Apply for ParentDiff<'a> {
         type Parent = Parent;
 
-        fn apply(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
-            self.c1.apply(&mut source.c1, errs);
-            self.c2.apply(&mut source.c2, errs);
-            self.c3.apply(&mut source.c3, errs);
-            self.val.apply(&mut source.val, errs);
+        fn apply_to_base(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+            self.c1.apply_to_base(&mut source.c1, errs);
+            self.c2.apply_to_base(&mut source.c2, errs);
+            self.c3.apply_to_base(&mut source.c3, errs);
+            self.val.apply_to_base(&mut source.val, errs);
         }
     }
 
@@ -389,9 +376,9 @@ mod tests {
     impl<'a> Apply for Child1Diff<'a> {
         type Parent = Child1;
 
-        fn apply(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
-            self.x.apply(&mut source.x, errs);
-            self.y.apply(&mut source.y, errs);
+        fn apply_to_base(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+            self.x.apply_to_base(&mut source.x, errs);
+            self.y.apply_to_base(&mut source.y, errs);
         }
     }
 
@@ -421,10 +408,10 @@ mod tests {
     impl<'a> Apply for Child2Diff<'a> {
         type Parent = Child2;
 
-        fn apply(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
-            self.a.apply(&mut source.a, errs);
-            self.b.apply(&mut source.b, errs);
-            Apply::apply(self.c, &mut source.c, errs);
+        fn apply_to_base(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+            self.a.apply_to_base(&mut source.a, errs);
+            self.b.apply_to_base(&mut source.b, errs);
+            Apply::apply_to_base(self.c, &mut source.c, errs);
         }
     }
 
@@ -466,10 +453,10 @@ mod tests {
     impl<'a> Apply for SomeChildDiff<'a> {
         type Parent = SomeChild;
 
-        fn apply(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+        fn apply_to_base(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
             match (self, source) {
-                (SomeChildDiff::C1(diff), SomeChild::C1(src)) => diff.apply(src, errs),
-                (SomeChildDiff::C2(diff), SomeChild::C2(src)) => diff.apply(src, errs),
+                (SomeChildDiff::C1(diff), SomeChild::C1(src)) => diff.apply_to_base(src, errs),
+                (SomeChildDiff::C2(diff), SomeChild::C2(src)) => diff.apply_to_base(src, errs),
                 _ => errs.push(ApplyError::MismatchingEnum),
             }
         }
@@ -583,12 +570,23 @@ mod tests {
     }
 
     #[test]
-    fn test_newtype() {
+    fn test_unit_struct() {
         #[derive(Diffable, PartialEq, Debug, Clone)]
-        struct Newtype(Vec<&'static str>);
+        struct Unit;
+        let mut it1 = Unit;
+        let it2 = Unit;
+        let diff = it1.diff(&it2);
+        it1.apply(diff).unwrap();
+        assert_eq!(it1, it2);
+    }
 
-        let mut it1 = Newtype(vec!["first", "second"]);
-        let it2 = Newtype(vec!["second", "third"]);
+    #[test]
+    fn test_tuple_struct() {
+        #[derive(Diffable, PartialEq, Debug, Clone)]
+        struct Tuple(Vec<&'static str>, i32);
+
+        let mut it1 = Tuple(vec!["first", "second"], 123);
+        let it2 = Tuple(vec!["second", "third"], 123);
         let diff = it1.diff(&it2);
         it1.apply(diff).unwrap();
         assert_eq!(it1, it2);
