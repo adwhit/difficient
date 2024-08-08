@@ -114,10 +114,10 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum DeepDiff<'a, T, U> {
+pub enum DeepDiff<'a, Full, Patch> {
     Unchanged,
-    Patched(U),
-    Replaced(&'a T),
+    Patched(Patch),
+    Replaced(&'a Full),
 }
 
 impl<'a, T, U> Replace for DeepDiff<'a, T, U> {
@@ -315,46 +315,106 @@ where
     }
 }
 
-impl<'a, T, U> Diffable<'a> for (T, U)
+impl<'a, T> Diffable<'a> for Option<T>
 where
-    T: Diffable<'a>,
-    U: Diffable<'a>,
+    T: Diffable<'a> + Clone + 'a,
 {
-    type Diff = (T::Diff, U::Diff);
+    type Diff = DeepDiff<'a, Self, Option<T::Diff>>;
 
     fn diff(&self, other: &'a Self) -> Self::Diff {
-        (self.0.diff(&other.0), self.1.diff(&other.1))
+        match (self, other) {
+            (None, None) => DeepDiff::Unchanged,
+            (None, Some(_)) | (Some(_), None) => DeepDiff::Replaced(other),
+            (Some(l), Some(r)) => {
+                let diff = l.diff(r);
+                if diff.is_unchanged() {
+                    DeepDiff::Unchanged
+                } else if diff.is_replaced() {
+                    DeepDiff::Replaced(other)
+                } else {
+                    DeepDiff::Patched(Some(diff))
+                }
+            }
+        }
     }
 }
 
-impl<T, U> Replace for (T, U)
-where
-    T: Replace,
-    U: Replace,
-{
-    type Replaces = (T::Replaces, U::Replaces);
-
-    fn is_unchanged(&self) -> bool {
-        self.0.is_unchanged() && self.1.is_unchanged()
-    }
-
-    fn is_replaced(&self) -> bool {
-        self.0.is_replaced() && self.1.is_replaced()
-    }
-}
-
-impl<T, U> Apply for (T, U)
+impl<T> Apply for Option<T>
 where
     T: Apply,
-    U: Apply,
 {
-    type Parent = (T::Parent, U::Parent);
+    type Parent = Option<T::Parent>;
 
     fn apply_to_base(&self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
-        self.0.apply_to_base(&mut source.0, errs);
-        self.1.apply_to_base(&mut source.1, errs);
+        match (self, source) {
+            (Some(diff), Some(src)) => diff.apply_to_base(src, errs),
+            _ => errs.push(ApplyError::MismatchingEnum),
+        }
     }
 }
+
+macro_rules! tuple_impl {
+    ( $( $tup:ident $ix:tt ),* ) => {
+        impl<'a, $( $tup ),*> Diffable<'a> for ( $( $tup, )* )
+        where
+            $( $tup: Diffable<'a> ),*
+        {
+            type Diff = ( $( $tup::Diff,)* );
+
+            fn diff(&self, other: &'a Self) -> Self::Diff {
+                (
+                    $(
+                        self.$ix.diff(&other.$ix),
+                    )*
+                )
+            }
+        }
+
+        impl< $( $tup ),*> Replace for ($( $tup, )*)
+        where
+            $( $tup: Replace ),*
+        {
+            type Replaces = ( $( $tup::Replaces, )* );
+
+            fn is_unchanged(&self) -> bool {
+                    $(
+                        self.$ix.is_unchanged() &&
+                    )*
+                    true
+            }
+
+            fn is_replaced(&self) -> bool {
+                    $(
+                        self.$ix.is_replaced() &&
+                    )*
+                    true
+            }
+        }
+
+        impl< $( $tup ),*> Apply for ( $( $tup, )*)
+        where
+            $( $tup: Apply ),*
+        {
+            type Parent = ( $( $tup::Parent, )* );
+
+            fn apply_to_base(&self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+                    $(
+                        self.$ix.apply_to_base(&mut source.$ix, errs);
+                    )*
+            }
+        }
+    };
+}
+
+tuple_impl!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7, I 8);
+tuple_impl!(A 0, B 1, C 2, D 3, E 4, F 5, G 6, H 7);
+tuple_impl!(A 0, B 1, C 2, D 3, E 4, F 5, G 6);
+tuple_impl!(A 0, B 1, C 2, D 3, E 4, F 5);
+tuple_impl!(A 0, B 1, C 2, D 3, E 4);
+tuple_impl!(A 0, B 1, C 2, D 3);
+tuple_impl!(A 0, B 1, C 2);
+tuple_impl!(A 0, B 1);
+tuple_impl!(A 0);
 
 #[cfg(test)]
 mod tests {
@@ -566,10 +626,7 @@ mod tests {
                 321,
                 Child2 {
                     a: "ayeaye".into(),
-                    b: SomeChild::C1(Child1 {
-                        x: 222,
-                        y: "uuu".into(),
-                    }),
+                    b: SomeChild::C2(Box::new(dummy_child2())),
                     c: (),
                 },
             )]
@@ -626,6 +683,8 @@ mod tests {
         }
     }
 
+    // **** Derive tests
+
     #[test]
     fn test_simple_struct() {
         #[derive(Diffable, PartialEq, Debug, Clone)]
@@ -649,11 +708,20 @@ mod tests {
 
     #[test]
     fn test_less_simple_struct() {
-        use std::sync::Arc;
         #[derive(Diffable, PartialEq, Debug, Clone)]
         struct StrangeStruct {
-            r#try: Box<(u32, Arc<String>)>,
+            r#try: Option<Box<(u32, (&'static str, Box<u64>))>>,
         }
+
+        let mut it1 = StrangeStruct {
+            r#try: Some(Box::new((123, ("ick", Box::new(543))))),
+        };
+        let it2 = StrangeStruct {
+            r#try: Some(Box::new((123, ("flick", Box::new(543))))),
+        };
+        let diff = it1.diff(&it2);
+        it1.apply(diff).unwrap();
+        assert_eq!(it1, it2);
     }
 
     #[test]
