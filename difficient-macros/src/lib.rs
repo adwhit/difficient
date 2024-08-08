@@ -6,7 +6,7 @@ use darling::{
 };
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote, ToTokens};
-use syn::{DeriveInput, Ident};
+use syn::{DeriveInput, Generics, Ident};
 
 #[derive(Debug, FromField)]
 struct StructLike {
@@ -24,6 +24,7 @@ struct EnumData {
 struct DeriveDiffable {
     ident: syn::Ident,
     data: Data<EnumData, StructLike>,
+    generics: Generics,
 }
 
 fn diff_body(diff_ty: &Ident, variant_name: &Ident, fields: &Fields<StructLike>) -> TokenStream {
@@ -78,6 +79,10 @@ fn deepdiff_impl(field: &[Ident], patch_impl: TokenStream) -> TokenStream {
 
 impl DeriveDiffable {
     fn derive(&self) -> TokenStream {
+        if !self.generics.params.is_empty() {
+            panic!("derive(Diffable) does not support generic parameters")
+        }
+
         let name = &self.ident;
         let diff_ty = format_ident!("{}Diff", self.ident);
 
@@ -111,6 +116,7 @@ impl DeriveDiffable {
 
                 let enum_definition = quote! {
                     #[derive(Debug, Clone, PartialEq)]
+                    #[allow(dead_code)]
                     enum #diff_ty<'a> {
                         #(
                             #var_name #var_diff_def,
@@ -145,7 +151,7 @@ impl DeriveDiffable {
                 };
 
                 let apply_body =variants.iter().zip(var_name.iter()).map(|(var, var_name)| {
-                    let pat_l = dbg!(prefixed_idents(&var.fields, "left"));
+                    let pat_l = prefixed_idents(&var.fields, "left");
                     let pat_r = prefixed_idents(&var.fields, "right");
                     let pattern_match_left = pattern_match(&var.fields, "left");
                     let pattern_match_right = pattern_match(&var.fields, "right");
@@ -159,7 +165,7 @@ impl DeriveDiffable {
                 let apply_impl = quote! {
                     impl<'a> Apply for #diff_ty<'a> {
                         type Parent = #name;
-                        fn apply_to_base(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+                        fn apply_to_base(&self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
                             match (self, source) {
                                 #( #apply_body )*
                                 _ => errs.push(ApplyError::MismatchingEnum),
@@ -192,7 +198,7 @@ impl DeriveDiffable {
                 };
 
                 let field = idents(fields);
-                let accessor = accessor(fields);
+                let accessor = accessors(fields);
                 let diff_ty_def = match fields.style {
                     Style::Tuple => {
                         quote! {
@@ -246,7 +252,7 @@ impl DeriveDiffable {
 
                     impl<'a> Apply for #diff_ty<'a> {
                         type Parent = #name;
-                        fn apply_to_base(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+                        fn apply_to_base(&self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
                             #( self.#accessor.apply_to_base(&mut source.#accessor, errs) );*
                         }
                     }
@@ -312,7 +318,7 @@ fn idents(fields: &Fields<StructLike>) -> Vec<Ident> {
         .collect()
 }
 
-fn accessor(fields: &Fields<StructLike>) -> Vec<TokenStream> {
+fn accessors(fields: &Fields<StructLike>) -> Vec<TokenStream> {
     fields
         .iter()
         .enumerate()
@@ -320,6 +326,7 @@ fn accessor(fields: &Fields<StructLike>) -> Vec<TokenStream> {
             if let Some(field_name) = &sl.ident {
                 quote! { #field_name }
             } else {
+                let ix = syn::Index::from(ix);
                 quote! { #ix }
             }
         })
@@ -373,7 +380,7 @@ mod tests {
             }
             impl<'a> Apply for SimpleStructDiff {
                 type Parent = SimpleStruct;
-                fn apply_to_base(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+                fn apply_to_base(&self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
                     self.x.apply(&mut source.x, errs);
                     self.y.apply(&mut source.y, errs)
                 }

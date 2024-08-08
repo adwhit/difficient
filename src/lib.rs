@@ -1,4 +1,4 @@
-use std::{collections::HashMap, hash::Hash, marker::PhantomData};
+use std::{collections::HashMap, hash::Hash, marker::PhantomData, ops::Deref};
 
 pub use difficient_macros::Diffable;
 
@@ -26,7 +26,7 @@ pub trait Replace {
 
 pub trait Apply {
     type Parent;
-    fn apply_to_base(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>);
+    fn apply_to_base(&self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -79,7 +79,7 @@ impl<T> Replace for Id<T> {
 
 impl<T> Apply for Id<T> {
     type Parent = T;
-    fn apply_to_base(self, _: &mut Self::Parent, _: &mut Vec<ApplyError>) {}
+    fn apply_to_base(&self, _: &mut Self::Parent, _: &mut Vec<ApplyError>) {}
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -105,10 +105,10 @@ where
     T: Clone,
 {
     type Parent = T;
-    fn apply_to_base(self, source: &mut Self::Parent, _: &mut Vec<ApplyError>) {
+    fn apply_to_base(&self, source: &mut Self::Parent, _: &mut Vec<ApplyError>) {
         match self {
             AtomicDiff::Unchanged => {}
-            AtomicDiff::Replaced(r) => *source = r.clone(),
+            AtomicDiff::Replaced(r) => *source = (*r).clone(),
         };
     }
 }
@@ -139,11 +139,11 @@ where
 {
     type Parent = T;
 
-    fn apply_to_base(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+    fn apply_to_base(&self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
         match self {
             DeepDiff::Unchanged => {}
             DeepDiff::Patched(patch) => patch.apply_to_base(source, errs),
-            DeepDiff::Replaced(r) => *source = r.clone(),
+            DeepDiff::Replaced(r) => *source = (*r).clone(),
         };
     }
 }
@@ -245,19 +245,19 @@ where
 
 impl<'a, K, V> Apply for HashMap<K, KvDiff<'a, V>>
 where
-    K: Eq + Hash,
+    K: Eq + Hash + Clone,
     V: Diffable<'a> + Clone,
 {
     type Parent = HashMap<K, V>;
 
-    fn apply_to_base(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+    fn apply_to_base(&self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
         for (k, v) in self.into_iter() {
             match v {
                 KvDiff::Removed => match source.remove(&k) {
                     Some(_) => {}
                     None => errs.push(ApplyError::MissingKey),
                 },
-                KvDiff::Inserted(val) => match source.insert(k, val.clone()) {
+                KvDiff::Inserted(val) => match source.insert((*k).clone(), (*val).clone()) {
                     Some(_) => errs.push(ApplyError::UnexpectedKey),
                     None => {}
                 },
@@ -275,6 +275,84 @@ impl<'a> Diffable<'a> for () {
 
     fn diff(&self, _: &Self) -> Self::Diff {
         Id::new()
+    }
+}
+
+impl<'a, T> Diffable<'a> for Box<T>
+where
+    T: Diffable<'a>,
+{
+    type Diff = Box<T::Diff>;
+
+    fn diff(&self, other: &'a Self) -> Self::Diff {
+        Box::new(self.deref().diff(other.deref()))
+    }
+}
+
+impl<T> Replace for Box<T>
+where
+    T: Replace,
+{
+    type Replaces = Box<T::Replaces>;
+
+    fn is_unchanged(&self) -> bool {
+        self.deref().is_unchanged()
+    }
+
+    fn is_replaced(&self) -> bool {
+        self.deref().is_replaced()
+    }
+}
+
+impl<T> Apply for Box<T>
+where
+    T: Apply,
+{
+    type Parent = Box<T::Parent>;
+
+    fn apply_to_base(&self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+        self.deref().apply_to_base(source, errs)
+    }
+}
+
+impl<'a, T, U> Diffable<'a> for (T, U)
+where
+    T: Diffable<'a>,
+    U: Diffable<'a>,
+{
+    type Diff = (T::Diff, U::Diff);
+
+    fn diff(&self, other: &'a Self) -> Self::Diff {
+        (self.0.diff(&other.0), self.1.diff(&other.1))
+    }
+}
+
+impl<T, U> Replace for (T, U)
+where
+    T: Replace,
+    U: Replace,
+{
+    type Replaces = (T::Replaces, U::Replaces);
+
+    fn is_unchanged(&self) -> bool {
+        self.0.is_unchanged() && self.1.is_unchanged()
+    }
+
+    fn is_replaced(&self) -> bool {
+        self.0.is_replaced() && self.1.is_replaced()
+    }
+}
+
+impl<T, U> Apply for (T, U)
+where
+    T: Apply,
+    U: Apply,
+{
+    type Parent = (T::Parent, U::Parent);
+
+    fn apply_to_base(&self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+        self.0.apply_to_base(&mut source.0, errs);
+        self.1.apply_to_base(&mut source.1, errs);
     }
 }
 
@@ -343,7 +421,7 @@ mod tests {
     impl<'a> Apply for ParentDiff<'a> {
         type Parent = Parent;
 
-        fn apply_to_base(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+        fn apply_to_base(&self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
             self.c1.apply_to_base(&mut source.c1, errs);
             self.c2.apply_to_base(&mut source.c2, errs);
             self.c3.apply_to_base(&mut source.c3, errs);
@@ -376,7 +454,7 @@ mod tests {
     impl<'a> Apply for Child1Diff<'a> {
         type Parent = Child1;
 
-        fn apply_to_base(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+        fn apply_to_base(&self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
             self.x.apply_to_base(&mut source.x, errs);
             self.y.apply_to_base(&mut source.y, errs);
         }
@@ -408,10 +486,10 @@ mod tests {
     impl<'a> Apply for Child2Diff<'a> {
         type Parent = Child2;
 
-        fn apply_to_base(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+        fn apply_to_base(&self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
             self.a.apply_to_base(&mut source.a, errs);
             self.b.apply_to_base(&mut source.b, errs);
-            Apply::apply_to_base(self.c, &mut source.c, errs);
+            self.c.apply_to_base(&mut source.c, errs);
         }
     }
 
@@ -436,7 +514,7 @@ mod tests {
                     } else if this.is_replaced() {
                         DeepDiff::Replaced(other)
                     } else {
-                        DeepDiff::Patched(SomeChildDiff::C2(Box::new(this)))
+                        DeepDiff::Patched(SomeChildDiff::C2(this))
                     }
                 }
                 _ => DeepDiff::Replaced(other),
@@ -453,7 +531,7 @@ mod tests {
     impl<'a> Apply for SomeChildDiff<'a> {
         type Parent = SomeChild;
 
-        fn apply_to_base(self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+        fn apply_to_base(&self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
             match (self, source) {
                 (SomeChildDiff::C1(diff), SomeChild::C1(src)) => diff.apply_to_base(src, errs),
                 (SomeChildDiff::C2(diff), SomeChild::C2(src)) => diff.apply_to_base(src, errs),
@@ -567,6 +645,15 @@ mod tests {
         let diff = it1.diff(&it2);
         it1.apply(diff).unwrap();
         assert_eq!(it1, it2);
+    }
+
+    #[test]
+    fn test_less_simple_struct() {
+        use std::sync::Arc;
+        #[derive(Diffable, PartialEq, Debug, Clone)]
+        struct StrangeStruct {
+            r#try: Box<(u32, Arc<String>)>,
+        }
     }
 
     #[test]
