@@ -583,6 +583,18 @@ mod tests {
     }
 
     #[test]
+    fn test_newtype() {
+        #[derive(Diffable, PartialEq, Debug, Clone)]
+        struct Newtype(Vec<&'static str>);
+
+        let mut it1 = Newtype(vec!["first", "second"]);
+        let it2 = Newtype(vec!["second", "third"]);
+        let diff = it1.diff(&it2);
+        it1.apply(diff).unwrap();
+        assert_eq!(it1, it2);
+    }
+
+    #[test]
     fn test_simple_enum() {
         #[derive(Diffable, PartialEq, Debug, Clone)]
         enum SimpleEnum {
