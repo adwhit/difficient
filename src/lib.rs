@@ -21,16 +21,20 @@
 //! }
 //!
 //! let mut first = SimpleEnum::First;
+//!
+//! let diff1 = first.diff(&first);
+//! assert_eq!(diff1, DeepDiff::Unchanged);
+//!
 //! let mut second1 = SimpleEnum::Second {
 //!     x: "hello",
 //!     y: (),
 //!     z: SimpleStruct { a: "aaa".into(), b: 123 }
 //! };
 //!
-//! let diff1 = first.diff(&second1);
+//! let diff2 = first.diff(&second1);
 //! let expect = DeepDiff::Replaced(&second1);
-//! assert_eq!(diff1, expect);
-//! first.apply(diff1);
+//! assert_eq!(diff2, expect);
+//! first.apply(diff2);
 //! assert_eq!(first, second1);
 //!
 //! let second2 = SimpleEnum::Second {
@@ -39,7 +43,7 @@
 //!     z: SimpleStruct { a: "aaa".into(), b: 234 }
 //! };
 //!
-//! let diff2 = second1.diff(&second2);
+//! let diff3 = second1.diff(&second2);
 //! let expect = DeepDiff::Patched(SimpleEnumDiff::Second {
 //!     x: AtomicDiff::Replaced(&"goodbye"),
 //!     y: Id::new(),
@@ -47,8 +51,8 @@
 //!         SimpleStructDiff { a: AtomicDiff::Unchanged, b: AtomicDiff::Replaced(&234) }
 //!     )
 //! });
-//! assert_eq!(diff2, expect);
-//! second1.apply(diff2);
+//! assert_eq!(diff3, expect);
+//! second1.apply(diff3);
 //! assert_eq!(second1, second2);
 //! ```
 
@@ -230,6 +234,7 @@ macro_rules! impl_diffable_for_primitives {
 impl_diffable_for_primitives! {
     i8 i16 i32 i64
     u8 u16 u32 u64
+    f32 f64
     bool
     &'static str
     String

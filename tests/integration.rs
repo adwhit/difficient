@@ -34,6 +34,7 @@ enum SomeChild {
 }
 
 // *** Impls ***
+
 #[derive(difficient::Diffable, PartialEq, Debug, Clone)]
 struct SimpleStruct {
     x: String,
@@ -50,6 +51,20 @@ struct Unit;
 
 #[derive(difficient::Diffable, PartialEq, Debug, Clone)]
 struct Tuple(Vec<&'static str>, i32);
+
+#[derive(difficient::Diffable, PartialEq, Debug, Clone)]
+#[allow(dead_code)]
+enum FieldlessEnum {
+    A,
+}
+
+#[derive(difficient::Diffable, PartialEq, Debug, Clone)]
+#[allow(dead_code)]
+enum AnotherFieldlessEnum {
+    A,
+    B(),
+    C {},
+}
 
 #[derive(difficient::Diffable, PartialEq, Debug, Clone)]
 enum SimpleEnum {

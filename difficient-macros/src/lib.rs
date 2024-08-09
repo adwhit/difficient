@@ -82,6 +82,12 @@ impl DeriveDiffable {
         match &self.data {
             Data::Enum(variants) => {
                 let var_name: Vec<&Ident> = variants.iter().map(|ed| &ed.ident).collect();
+                let is_fieldless = variants.iter().all(|ed| ed.fields.is_empty());
+                let lifetime = if is_fieldless {
+                    quote! {}
+                } else {
+                    quote! { <'a> }
+                };
                 let var_diff_def = variants.iter().map(|var| match var.fields.style {
                     Style::Unit => quote! {},
                     Style::Tuple => {
@@ -110,7 +116,7 @@ impl DeriveDiffable {
                 let enum_definition = quote! {
                     #[derive(Debug, Clone, PartialEq)]
                     #[allow(dead_code)]
-                    enum #diff_ty<'a> {
+                    enum #diff_ty #lifetime {
                         #(
                             #var_name #var_diff_def,
                         )*
@@ -130,7 +136,7 @@ impl DeriveDiffable {
 
                 let diffable_impl = quote! {
                     impl<'a> difficient::Diffable<'a> for #name {
-                        type Diff = difficient::DeepDiff<'a, Self, #diff_ty<'a>>;
+                        type Diff = difficient::DeepDiff<'a, Self, #diff_ty #lifetime>;
 
                         fn diff(&self, other: &'a Self) -> Self::Diff {
                             use difficient::Replace as _;
@@ -157,7 +163,7 @@ impl DeriveDiffable {
                 }).collect::<Vec<_>>();
 
                 let apply_impl = quote! {
-                    impl<'a> difficient::Apply for #diff_ty<'a> {
+                    impl #lifetime difficient::Apply for #diff_ty #lifetime {
                         type Parent = #name;
                         fn apply_to_base(&self, source: &mut Self::Parent, errs: &mut Vec<difficient::ApplyError>) {
                             match (self, source) {
