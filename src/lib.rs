@@ -1,3 +1,57 @@
+//! # Difficient
+//!
+//! Efficient, type-safe, (almost) zero-allocation diffing.
+//!
+//!
+//! # Example
+//!
+//! ```
+//! use difficient::{Diffable, DeepDiff, AtomicDiff, Id};
+//!
+//! #[derive(Diffable, PartialEq, Debug, Clone)]
+//! enum SimpleEnum {
+//!     First,
+//!     Second { x: &'static str, y: (), z: SimpleStruct },
+//! }
+//!
+//! #[derive(Diffable, PartialEq, Debug, Clone)]
+//! struct SimpleStruct {
+//!     a: String,
+//!     b: i32,
+//! }
+//!
+//! let mut first = SimpleEnum::First;
+//! let mut second1 = SimpleEnum::Second {
+//!     x: "hello",
+//!     y: (),
+//!     z: SimpleStruct { a: "aaa".into(), b: 123 }
+//! };
+//!
+//! let diff1 = first.diff(&second1);
+//! let expect = DeepDiff::Replaced(&second1);
+//! assert_eq!(diff1, expect);
+//! first.apply(diff1);
+//! assert_eq!(first, second1);
+//!
+//! let second2 = SimpleEnum::Second {
+//!     x: "goodbye",
+//!     y: (),
+//!     z: SimpleStruct { a: "aaa".into(), b: 234 }
+//! };
+//!
+//! let diff2 = second1.diff(&second2);
+//! let expect = DeepDiff::Patched(SimpleEnumDiff::Second {
+//!     x: AtomicDiff::Replaced(&"goodbye"),
+//!     y: Id::new(),
+//!     z: DeepDiff::Patched(
+//!         SimpleStructDiff { a: AtomicDiff::Unchanged, b: AtomicDiff::Replaced(&234) }
+//!     )
+//! });
+//! assert_eq!(diff2, expect);
+//! second1.apply(diff2);
+//! assert_eq!(second1, second2);
+//! ```
+
 use std::{collections::HashMap, hash::Hash, marker::PhantomData, ops::Deref};
 
 pub use difficient_macros::Diffable;

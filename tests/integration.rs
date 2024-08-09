@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 struct Parent {
     c1: Child1,
     c2: Vec<Child1>,
@@ -11,12 +12,14 @@ struct Parent {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 struct Child1 {
     x: i32,
     y: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 struct Child2 {
     a: String,
     b: SomeChild,
@@ -24,6 +27,7 @@ struct Child2 {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 enum SomeChild {
     C1(Child1),
     C2(Box<Child2>),
