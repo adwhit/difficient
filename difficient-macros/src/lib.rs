@@ -49,30 +49,23 @@ fn diff_body(diff_ty: &Ident, variant_name: &Ident, fields: &Fields<StructLike>)
     match fields.style {
         Style::Unit => quote! {
             // if unit-types match, by definition they are unchanged
-            DeepDiff::Unchanged
+            difficient::DeepDiff::Unchanged
         },
         Style::Tuple | Style::Struct => {
             let left_ident = prefixed_idents(fields, "left");
             let right_ident = prefixed_idents(fields, "right");
-            let the_impl = deepdiff_impl(&ident, patch_ctor);
             quote! {
                 #(
                     let #ident = #left_ident.diff(#right_ident);
                 )*
-                #the_impl
+                if #( #ident.is_unchanged() && )* true {
+                    difficient::DeepDiff::Unchanged
+                } else if #( #ident.is_replaced() && )* true {
+                    difficient::DeepDiff::Replaced(other)
+                } else {
+                    difficient::DeepDiff::Patched(#patch_ctor)
+                }
             }
-        }
-    }
-}
-
-fn deepdiff_impl(field: &[Ident], patch_impl: TokenStream) -> TokenStream {
-    quote! {
-        if #( #field.is_unchanged() && )* true {
-            DeepDiff::Unchanged
-        } else if #( #field.is_replaced() && )* true {
-            DeepDiff::Replaced(other)
-        } else {
-            DeepDiff::Patched(#patch_impl)
         }
     }
 }
@@ -95,7 +88,7 @@ impl DeriveDiffable {
                         let ty = var.fields.iter().map(|data| &data.ty);
                         quote! {
                             (
-                                #(  <#ty as Diffable<'a>>::Diff, )*
+                                #(  <#ty as difficient::Diffable<'a>>::Diff, )*
                             )
                         }
                     }
@@ -108,7 +101,7 @@ impl DeriveDiffable {
                         let ty = var.fields.iter().map(|data| &data.ty);
                         quote! {
                             {
-                                #( #field: <#ty as Diffable<'a>>::Diff, )*
+                                #( #field: <#ty as difficient::Diffable<'a>>::Diff, )*
                             }
                         }
                     }
@@ -136,15 +129,16 @@ impl DeriveDiffable {
                 });
 
                 let diffable_impl = quote! {
-                    impl<'a> Diffable<'a> for #name {
-                        type Diff = DeepDiff<'a, Self, #diff_ty<'a>>;
+                    impl<'a> difficient::Diffable<'a> for #name {
+                        type Diff = difficient::DeepDiff<'a, Self, #diff_ty<'a>>;
 
                         fn diff(&self, other: &'a Self) -> Self::Diff {
+                            use difficient::Replace as _;
                             match (self, other) {
                                 #(
                                     #variant_diff_impl
                                 ),*
-                                _ => DeepDiff::Replaced(other)
+                                _ => difficient::DeepDiff::Replaced(other)
                             }
                         }
                     }
@@ -163,12 +157,12 @@ impl DeriveDiffable {
                 }).collect::<Vec<_>>();
 
                 let apply_impl = quote! {
-                    impl<'a> Apply for #diff_ty<'a> {
+                    impl<'a> difficient::Apply for #diff_ty<'a> {
                         type Parent = #name;
-                        fn apply_to_base(&self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+                        fn apply_to_base(&self, source: &mut Self::Parent, errs: &mut Vec<difficient::ApplyError>) {
                             match (self, source) {
                                 #( #apply_body )*
-                                _ => errs.push(ApplyError::MismatchingEnum),
+                                _ => errs.push(difficient::ApplyError::MismatchingEnum),
                             }
                         }
                     }
@@ -187,11 +181,11 @@ impl DeriveDiffable {
                 if let Style::Unit = fields.style {
                     // short-circuit return
                     return quote! {
-                        impl<'a> Diffable<'a> for #name {
-                            type Diff = Id<Self>;
+                        impl<'a> difficient::Diffable<'a> for #name {
+                            type Diff = difficient::Id<Self>;
 
                             fn diff(&self, other: &'a Self) -> Self::Diff {
-                                Id::new()
+                                difficient::Id::new()
                             }
                         }
                     };
@@ -204,7 +198,7 @@ impl DeriveDiffable {
                         quote! {
                             struct #diff_ty<'a>(
                                 #(
-                                    <#ty as Diffable<'a>>::Diff,
+                                    <#ty as difficient::Diffable<'a>>::Diff,
                                 )*
                             );
                         }
@@ -213,7 +207,7 @@ impl DeriveDiffable {
                         quote! {
                             struct #diff_ty<'a> {
                                 #(
-                                    #field: <#ty as Diffable<'a>>::Diff,
+                                    #field: <#ty as difficient::Diffable<'a>>::Diff,
                                 )*
                             }
                         }
@@ -225,7 +219,7 @@ impl DeriveDiffable {
                         #diff_ty( #( #field, )* )
                     },
                     Style::Struct => quote! {
-                        #diff_ty{ #( #field, )* }
+                        #diff_ty{ #( #field ),* }
                     },
                     Style::Unit => unreachable!(),
                 };
@@ -233,26 +227,27 @@ impl DeriveDiffable {
                     #[derive(Debug, Clone, PartialEq)]
                     #diff_ty_def
 
-                    impl<'a> Diffable<'a> for #name {
-                        type Diff = DeepDiff<'a, Self, #diff_ty<'a>>;
+                    impl<'a> difficient::Diffable<'a> for #name {
+                        type Diff = difficient::DeepDiff<'a, Self, #diff_ty<'a>>;
 
                         fn diff(&self, other: &'a Self) -> Self::Diff {
+                            use difficient::Replace as _;
                             #(
                                 let #field = self.#accessor.diff(&other.#accessor);
                             )*
                             if #( #field.is_unchanged() && )* true {
-                                DeepDiff::Unchanged
+                                difficient::DeepDiff::Unchanged
                             } else if #( #field.is_replaced() && )* true {
-                                DeepDiff::Replaced(other)
+                                difficient::DeepDiff::Replaced(other)
                             } else {
-                                DeepDiff::Patched(#patched_impl)
+                                difficient::DeepDiff::Patched(#patched_impl)
                             }
                         }
                     }
 
-                    impl<'a> Apply for #diff_ty<'a> {
+                    impl<'a> difficient::Apply for #diff_ty<'a> {
                         type Parent = #name;
-                        fn apply_to_base(&self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+                        fn apply_to_base(&self, source: &mut Self::Parent, errs: &mut Vec<difficient::ApplyError>) {
                             #( self.#accessor.apply_to_base(&mut source.#accessor, errs) );*
                         }
                     }
@@ -359,32 +354,37 @@ mod tests {
         let derived = quote! { #diff };
 
         let expect = quote! {
-            #[derive(Debug, Clone, PartialEq)]
-            struct SimpleStructDiff {
-                x: <i32 as Diffable>::Diff,
-                y: <String as Diffable>::Diff,
-            }
-            impl Diffable for SimpleStruct {
-                type Diff = Diff<Self, SimpleStructDiff>;
-                fn diff(&self, other: &Self) -> Self::Diff {
-                    let x = self.x.diff(&other.x);
-                    let y = self.y.diff(&other.y);
-                    if x.is_unchanged() && y.is_unchanged() && true {
-                        Diff::Unchanged
-                    } else if x.is_replaced() && y.is_replaced() && true {
-                        Diff::Replaced(other)
-                    } else {
-                        Diff::Patched(SimpleStructDiff { x, y })
-                    }
+        #[derive(Debug, Clone, PartialEq)]
+        struct SimpleStructDiff<'a> {
+            x: <i32 as difficient::Diffable<'a>>::Diff,
+            y: <String as difficient::Diffable<'a>>::Diff,
+        }
+        impl<'a> difficient::Diffable<'a> for SimpleStruct {
+            type Diff = difficient::DeepDiff<'a, Self, SimpleStructDiff<'a>>;
+            fn diff(&self, other: &'a Self) -> Self::Diff {
+                use difficient::Replace as _;
+                let x = self.x.diff(&other.x);
+                let y = self.y.diff(&other.y);
+                if x.is_unchanged() && y.is_unchanged() && true {
+                    difficient::DeepDiff::Unchanged
+                } else if x.is_replaced() && y.is_replaced() && true {
+                    difficient::DeepDiff::Replaced(other)
+                } else {
+                    difficient::DeepDiff::Patched(SimpleStructDiff { x, y })
                 }
             }
-            impl<'a> Apply for SimpleStructDiff {
-                type Parent = SimpleStruct;
-                fn apply_to_base(&self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
-                    self.x.apply(&mut source.x, errs);
-                    self.y.apply(&mut source.y, errs)
-                }
+        }
+        impl<'a> difficient::Apply for SimpleStructDiff<'a> {
+            type Parent = SimpleStruct;
+            fn apply_to_base(
+                &self,
+                source: &mut Self::Parent,
+                errs: &mut Vec<difficient::ApplyError>
+            ) {
+                self.x.apply_to_base(&mut source.x, errs);
+                self.y.apply_to_base(&mut source.y, errs)
             }
+        }
         };
 
         assert_eq!(expect.to_string(), derived.to_string());
