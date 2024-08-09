@@ -1,3 +1,5 @@
+#![deny(warnings)]
+
 // ** Test structs
 
 use std::collections::HashMap;
@@ -53,24 +55,45 @@ struct Unit;
 struct Tuple(Vec<&'static str>, i32);
 
 #[derive(difficient::Diffable, PartialEq, Debug, Clone)]
-#[allow(dead_code)]
-enum FieldlessEnum {
-    A,
-}
-
-#[derive(difficient::Diffable, PartialEq, Debug, Clone)]
-#[allow(dead_code)]
-enum AnotherFieldlessEnum {
-    A,
-    B(),
-    C {},
-}
-
-#[derive(difficient::Diffable, PartialEq, Debug, Clone)]
 enum SimpleEnum {
     First,
     Second(i32),
     Third { x: String, y: () },
+}
+
+mod just_check_they_compile {
+
+    #[derive(difficient::Diffable, PartialEq, Debug, Clone)]
+    #[allow(dead_code)]
+    enum FieldlessEnum {
+        A,
+    }
+
+    #[derive(difficient::Diffable, PartialEq, Debug, Clone)]
+    #[allow(dead_code)]
+    enum AnotherFieldlessEnum {
+        A,
+        B(),
+        C {},
+    }
+
+    #[derive(difficient::Diffable, PartialEq, Debug, Clone)]
+    #[allow(non_camel_case_types)]
+    #[allow(non_snake_case)]
+    #[allow(dead_code)]
+    enum dumb_Enum_noWarnings {
+        lowercase { UPPERCASE: i32 },
+        UPPERCASE { lowercase: i32 },
+    }
+
+    #[derive(difficient::Diffable, PartialEq, Debug, Clone)]
+    #[allow(non_snake_case)]
+    #[allow(dead_code)]
+    #[allow(non_camel_case_types)]
+    struct dumb_Struct_noWarnings {
+        UPPERCASE: i32,
+        camelCase: i32,
+    }
 }
 
 // **** Derive tests

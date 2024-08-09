@@ -56,6 +56,8 @@
 //! assert_eq!(second1, second2);
 //! ```
 
+#![deny(warnings)]
+
 use std::{collections::HashMap, hash::Hash, marker::PhantomData, ops::Deref};
 
 pub use difficient_macros::Diffable;

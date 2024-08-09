@@ -115,7 +115,10 @@ impl DeriveDiffable {
 
                 let enum_definition = quote! {
                     #[derive(Debug, Clone, PartialEq)]
+                    #[allow(non_camel_case_types)]
+                    #[allow(non_snake_case)]
                     #[allow(dead_code)]
+                    #[automatically_derived]
                     enum #diff_ty #lifetime {
                         #(
                             #var_name #var_diff_def,
@@ -138,6 +141,7 @@ impl DeriveDiffable {
                     impl<'a> difficient::Diffable<'a> for #name {
                         type Diff = difficient::DeepDiff<'a, Self, #diff_ty #lifetime>;
 
+                        #[allow(non_snake_case)]
                         fn diff(&self, other: &'a Self) -> Self::Diff {
                             use difficient::Replace as _;
                             match (self, other) {
@@ -197,11 +201,18 @@ impl DeriveDiffable {
                     };
                 };
 
+                let allows = quote! {
+                    #[allow(non_camel_case_types)]
+                    #[allow(non_snake_case)]
+                    #[allow(dead_code)]
+                    #[automatically_derived]
+                };
                 let field = idents(fields);
                 let accessor = accessors(fields);
                 let diff_ty_def = match fields.style {
                     Style::Tuple => {
                         quote! {
+                            #allows
                             struct #diff_ty<'a>(
                                 #(
                                     <#ty as difficient::Diffable<'a>>::Diff,
@@ -211,6 +222,7 @@ impl DeriveDiffable {
                     }
                     Style::Struct => {
                         quote! {
+                            #allows
                             struct #diff_ty<'a> {
                                 #(
                                     #field: <#ty as difficient::Diffable<'a>>::Diff,
@@ -236,6 +248,7 @@ impl DeriveDiffable {
                     impl<'a> difficient::Diffable<'a> for #name {
                         type Diff = difficient::DeepDiff<'a, Self, #diff_ty<'a>>;
 
+                        #[allow(non_snake_case)]
                         fn diff(&self, other: &'a Self) -> Self::Diff {
                             use difficient::Replace as _;
                             #(
@@ -253,6 +266,7 @@ impl DeriveDiffable {
 
                     impl<'a> difficient::Apply for #diff_ty<'a> {
                         type Parent = #name;
+                        #[allow(non_snake_case)]
                         fn apply_to_base(&self, source: &mut Self::Parent, errs: &mut Vec<difficient::ApplyError>) {
                             #( self.#accessor.apply_to_base(&mut source.#accessor, errs) );*
                         }
