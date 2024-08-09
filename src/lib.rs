@@ -58,9 +58,19 @@
 
 #![deny(warnings)]
 
-use std::{collections::HashMap, hash::Hash, marker::PhantomData, ops::Deref};
+use std::{
+    collections::{BTreeMap, HashMap},
+    hash::Hash,
+    marker::PhantomData,
+    ops::Deref,
+};
 
 pub use difficient_macros::Diffable;
+
+#[cfg(feature = "chrono")]
+mod chrono;
+#[cfg(feature = "uuid")]
+mod uuid;
 
 // *** Trait
 
@@ -258,78 +268,87 @@ impl<'a, T: Clone + PartialEq + 'a> Diffable<'a> for Vec<T> {
     }
 }
 
-impl<'a, K, V> Diffable<'a> for HashMap<K, V>
-where
-    K: Hash + Eq + Clone + 'a,
-    V: Diffable<'a> + Clone + 'a,
-{
-    type Diff = DeepDiff<'a, Self, HashMap<K, KvDiff<'a, V>>>;
+macro_rules! kv_map_impl {
+    ($typ: ident, $bounds: ident) => {
+        impl<'a, K, V> Diffable<'a> for $typ<K, V>
+        where
+            K: $bounds + Eq + Clone + 'a,
+            V: Diffable<'a> + Clone + 'a,
+        {
+            type Diff = DeepDiff<'a, Self, $typ<K, KvDiff<'a, V>>>;
 
-    fn diff(&self, other: &'a Self) -> Self::Diff {
-        let mut diffs: HashMap<K, KvDiff<V>> = HashMap::new();
-        let mut all_unchanged = true;
-        let mut all_replaced = true;
-        for (k, v) in self.iter() {
-            let Some(other) = other.get(k) else {
-                all_replaced = false;
-                all_unchanged = false;
-                diffs.insert(k.clone(), KvDiff::Removed);
-                continue;
-            };
-            let diff = v.diff(other);
-            if diff.is_unchanged() {
-                // do 'nothing'
-                all_replaced = false;
-                continue;
-            } else {
-                all_replaced &= diff.is_replaced();
-                all_unchanged = false;
-                diffs.insert(k.clone(), KvDiff::Diff(diff));
+            fn diff(&self, other: &'a Self) -> Self::Diff {
+                let mut diffs: $typ<K, KvDiff<V>> = $typ::new();
+                let mut all_unchanged = true;
+                let mut all_replaced = true;
+                for (k, v) in self.iter() {
+                    let Some(other) = other.get(k) else {
+                        all_replaced = false;
+                        all_unchanged = false;
+                        diffs.insert(k.clone(), KvDiff::Removed);
+                        continue;
+                    };
+                    let diff = v.diff(other);
+                    if diff.is_unchanged() {
+                        // do 'nothing'
+                        all_replaced = false;
+                        continue;
+                    } else {
+                        all_replaced &= diff.is_replaced();
+                        all_unchanged = false;
+                        diffs.insert(k.clone(), KvDiff::Diff(diff));
+                    }
+                }
+                for (k, v) in other.iter() {
+                    if !other.contains_key(k) {
+                        all_unchanged = false;
+                        all_replaced = false;
+                        diffs.insert(k.clone(), KvDiff::Inserted(v));
+                    }
+                }
+                if all_unchanged {
+                    DeepDiff::Unchanged
+                } else if all_replaced {
+                    DeepDiff::Replaced(other)
+                } else {
+                    DeepDiff::Patched(diffs)
+                }
             }
         }
-        for (k, v) in other.iter() {
-            if !other.contains_key(k) {
-                all_unchanged = false;
-                all_replaced = false;
-                diffs.insert(k.clone(), KvDiff::Inserted(v));
+
+        impl<'a, K, V> Apply for $typ<K, KvDiff<'a, V>>
+        where
+            K: $bounds + Eq + Clone,
+            V: Diffable<'a> + Clone,
+        {
+            type Parent = $typ<K, V>;
+
+            fn apply_to_base(&self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
+                for (k, v) in self.into_iter() {
+                    match v {
+                        KvDiff::Removed => match source.remove(&k) {
+                            Some(_) => {}
+                            None => errs.push(ApplyError::MissingKey),
+                        },
+                        KvDiff::Inserted(val) => {
+                            match source.insert((*k).clone(), (*val).clone()) {
+                                Some(_) => errs.push(ApplyError::UnexpectedKey),
+                                None => {}
+                            }
+                        }
+                        KvDiff::Diff(diff) => match source.get_mut(&k) {
+                            Some(val) => diff.apply_to_base(val, errs),
+                            None => errs.push(ApplyError::MissingKey),
+                        },
+                    }
+                }
             }
         }
-        if all_unchanged {
-            DeepDiff::Unchanged
-        } else if all_replaced {
-            DeepDiff::Replaced(other)
-        } else {
-            DeepDiff::Patched(diffs)
-        }
-    }
+    };
 }
 
-impl<'a, K, V> Apply for HashMap<K, KvDiff<'a, V>>
-where
-    K: Eq + Hash + Clone,
-    V: Diffable<'a> + Clone,
-{
-    type Parent = HashMap<K, V>;
-
-    fn apply_to_base(&self, source: &mut Self::Parent, errs: &mut Vec<ApplyError>) {
-        for (k, v) in self.into_iter() {
-            match v {
-                KvDiff::Removed => match source.remove(&k) {
-                    Some(_) => {}
-                    None => errs.push(ApplyError::MissingKey),
-                },
-                KvDiff::Inserted(val) => match source.insert((*k).clone(), (*val).clone()) {
-                    Some(_) => errs.push(ApplyError::UnexpectedKey),
-                    None => {}
-                },
-                KvDiff::Diff(diff) => match source.get_mut(&k) {
-                    Some(val) => diff.apply_to_base(val, errs),
-                    None => errs.push(ApplyError::MissingKey),
-                },
-            }
-        }
-    }
-}
+kv_map_impl!(HashMap, Hash);
+kv_map_impl!(BTreeMap, Ord);
 
 impl<'a> Diffable<'a> for () {
     type Diff = Id<Self>;
