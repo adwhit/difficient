@@ -23,51 +23,9 @@ struct EnumData {
 #[derive(Debug, FromDeriveInput)]
 struct DeriveDiffable {
     ident: syn::Ident,
+    vis: syn::Visibility,
     data: Data<EnumData, StructLike>,
     generics: Generics,
-}
-
-fn diff_body(diff_ty: &Ident, variant_name: &Ident, fields: &Fields<StructLike>) -> TokenStream {
-    let ident = idents(fields);
-
-    let patch_ctor = match fields.style {
-        Style::Tuple => quote! {
-            // round brackets
-            #diff_ty::#variant_name(
-                # ( #ident, )*
-            )
-        },
-        Style::Struct => quote! {
-            // curly brackets
-            #diff_ty::#variant_name {
-                # ( #ident, )*
-            }
-        },
-        Style::Unit => quote! {},
-    };
-
-    match fields.style {
-        Style::Unit => quote! {
-            // if unit-types match, by definition they are unchanged
-            difficient::DeepDiff::Unchanged
-        },
-        Style::Tuple | Style::Struct => {
-            let left_ident = prefixed_idents(fields, "left");
-            let right_ident = prefixed_idents(fields, "right");
-            quote! {
-                #(
-                    let #ident = #left_ident.diff(#right_ident);
-                )*
-                if #( #ident.is_unchanged() && )* true {
-                    difficient::DeepDiff::Unchanged
-                } else if #( #ident.is_replaced() && )* true {
-                    difficient::DeepDiff::Replaced(other)
-                } else {
-                    difficient::DeepDiff::Patched(#patch_ctor)
-                }
-            }
-        }
-    }
 }
 
 impl DeriveDiffable {
@@ -78,6 +36,7 @@ impl DeriveDiffable {
 
         let name = &self.ident;
         let diff_ty = format_ident!("{}Diff", self.ident);
+        let vis = &self.vis;
 
         match &self.data {
             Data::Enum(variants) => {
@@ -119,7 +78,7 @@ impl DeriveDiffable {
                     #[allow(non_snake_case)]
                     #[allow(dead_code)]
                     #[automatically_derived]
-                    enum #diff_ty #lifetime {
+                    #vis enum #diff_ty #lifetime {
                         #(
                             #var_name #var_diff_def,
                         )*
@@ -213,7 +172,7 @@ impl DeriveDiffable {
                     Style::Tuple => {
                         quote! {
                             #allows
-                            struct #diff_ty<'a>(
+                            #vis struct #diff_ty<'a>(
                                 #(
                                     <#ty as difficient::Diffable<'a>>::Diff,
                                 )*
@@ -223,7 +182,7 @@ impl DeriveDiffable {
                     Style::Struct => {
                         quote! {
                             #allows
-                            struct #diff_ty<'a> {
+                            #vis struct #diff_ty<'a> {
                                 #(
                                     #field: <#ty as difficient::Diffable<'a>>::Diff,
                                 )*
@@ -280,6 +239,49 @@ impl DeriveDiffable {
 impl ToTokens for DeriveDiffable {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         tokens.extend(self.derive());
+    }
+}
+
+fn diff_body(diff_ty: &Ident, variant_name: &Ident, fields: &Fields<StructLike>) -> TokenStream {
+    let ident = idents(fields);
+
+    let patch_ctor = match fields.style {
+        Style::Tuple => quote! {
+            // round brackets
+            #diff_ty::#variant_name(
+                # ( #ident, )*
+            )
+        },
+        Style::Struct => quote! {
+            // curly brackets
+            #diff_ty::#variant_name {
+                # ( #ident, )*
+            }
+        },
+        Style::Unit => quote! {},
+    };
+
+    match fields.style {
+        Style::Unit => quote! {
+            // if unit-types match, by definition they are unchanged
+            difficient::DeepDiff::Unchanged
+        },
+        Style::Tuple | Style::Struct => {
+            let left_ident = prefixed_idents(fields, "left");
+            let right_ident = prefixed_idents(fields, "right");
+            quote! {
+                #(
+                    let #ident = #left_ident.diff(#right_ident);
+                )*
+                if #( #ident.is_unchanged() && )* true {
+                    difficient::DeepDiff::Unchanged
+                } else if #( #ident.is_replaced() && )* true {
+                    difficient::DeepDiff::Replaced(other)
+                } else {
+                    difficient::DeepDiff::Patched(#patch_ctor)
+                }
+            }
+        }
     }
 }
 
